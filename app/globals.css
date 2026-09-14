@@ -1,26 +1,117 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@custom-variant dark (&:where(.dark, .dark *));
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --bg-page: #f8fafc;
+    --fg-page: #0f172a;
+    
+    --bg-card: #ffffff;
+    --fg-card: #0f172a;
+    --border-card: #e2e8f0;
+    --border-card-hover: #cbd5e1;
+    --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+
+    --bg-sidebar: #ffffff;
+    --border-sidebar: #e2e8f0;
+
+    --bg-header: rgba(255, 255, 255, 0.85);
+    --border-header: #e2e8f0;
+
+    --bg-input: #ffffff;
+    --border-input: #e2e8f0;
+    --fg-input: #0f172a;
+
+    --bg-muted: #f1f5f9;
+    --fg-muted: #64748b;
+
+    --accent-primary: #0284c7;
+    --accent-hover: #0369a1;
+
+    --progress-track: #e2e8f0;
+  }
+
+  .dark {
+    --bg-page: #090d16;
+    --fg-page: #f8fafc;
+    
+    --bg-card: #111726;
+    --fg-card: #f8fafc;
+    --border-card: #192233;
+    --border-card-hover: #26334d;
+    --shadow-card: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+
+    --bg-sidebar: #070a12;
+    --border-sidebar: #192233;
+
+    --bg-header: rgba(9, 13, 22, 0.85);
+    --border-header: #192233;
+
+    --bg-input: #0b0f19;
+    --border-input: #192233;
+    --fg-input: #f8fafc;
+
+    --bg-muted: #161e31;
+    --fg-muted: #94a3b8;
+
+    --accent-primary: #38bdf8;
+    --accent-hover: #0ea5e9;
+
+    --progress-track: #161f30;
   }
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--bg-page);
+  color: var(--fg-page);
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow-x: hidden;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Ensure ALL buttons, icons, and interactive elements have cursor: pointer and align-items: center */
+button,
+[role="button"],
+input[type="button"],
+input[type="submit"],
+input[type="reset"],
+select,
+a {
+  cursor: pointer !important;
+}
+
+/* Custom scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-page);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-card);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-muted);
+}
+
+@keyframes transcode-pulse {
+  0%, 100% {
+    opacity: 0.6;
+    border-color: rgba(56, 189, 248, 0.25);
+  }
+  50% {
+    opacity: 1;
+    border-color: rgba(56, 189, 248, 0.6);
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.2);
+  }
+}
+
+.animate-transcode {
+  animation: transcode-pulse 2s infinite ease-in-out;
 }

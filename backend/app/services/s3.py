@@ -17,7 +17,16 @@ class S3Service:
             signature_version="s3v4",
             s3={"addressing_style": "virtual"}
         )
-        self.s3_client = boto3.client("s3", config=s3_config)
+        client_kwargs: Dict[str, Any] = {"config": s3_config}
+
+        # If credentials are explicitly provided in backend/.env, pass them to boto3
+        if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+            client_kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
+            client_kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY
+            if settings.AWS_SESSION_TOKEN:
+                client_kwargs["aws_session_token"] = settings.AWS_SESSION_TOKEN
+
+        self.s3_client = boto3.client("s3", **client_kwargs)
         self.bucket = settings.S3_BUCKET_NAME
 
     def sanitize_filename(self, filename: str) -> str:

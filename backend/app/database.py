@@ -22,9 +22,11 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
 )
 
+
 # Base class for SQLAlchemy 2.x declarative models
 class Base(DeclarativeBase):
     pass
+
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency that yields async SQLAlchemy sessions."""

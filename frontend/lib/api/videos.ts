@@ -1,8 +1,16 @@
+import axios from "axios";
 import { Video, CreateVideoPayload, Rendition } from "@/types/video";
 import { getExpectedRenditions } from "@/lib/utils";
 
 const STORAGE_KEY = "video_processing_platform_videos";
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL;
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+const apiClient = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
 
 // Mock dataset displaying parallel Kafka worker consumers based on source resolution mapping
 const MOCK_VIDEOS: Video[] = [
@@ -33,15 +41,16 @@ const MOCK_VIDEOS: Video[] = [
     width: 3840,
     height: 2160,
     mimeType: "video/quicktime",
-    status: "processing",
+    status: "ready",
     thumbnailUrl: "",
+    playbackUrl: "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8",
     createdAt: new Date(Date.now() - 1800000).toISOString(),
     renditions: [
       { resolution: "360p", status: "ready", workerId: "worker-01", processingTime: 6 },
       { resolution: "480p", status: "ready", workerId: "worker-02", processingTime: 18 },
       { resolution: "720p", status: "ready", workerId: "worker-03", processingTime: 28 },
-      { resolution: "1080p", status: "processing", workerId: "worker-04" },
-      { resolution: "1440p", status: "processing", workerId: "worker-05" },
+      { resolution: "1080p", status: "ready", workerId: "worker-04", processingTime: 42 },
+      { resolution: "1440p", status: "ready", workerId: "worker-05", processingTime: 64 },
     ],
   },
   {
@@ -52,15 +61,16 @@ const MOCK_VIDEOS: Video[] = [
     width: 3840,
     height: 2160,
     mimeType: "video/x-matroska",
-    status: "queued",
+    status: "ready",
     thumbnailUrl: "",
+    playbackUrl: "https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8",
     createdAt: new Date(Date.now() - 600000).toISOString(),
     renditions: [
-      { resolution: "360p", status: "queued" },
-      { resolution: "480p", status: "queued" },
-      { resolution: "720p", status: "queued" },
-      { resolution: "1080p", status: "queued" },
-      { resolution: "1440p", status: "queued" },
+      { resolution: "360p", status: "ready", workerId: "worker-01", processingTime: 8 },
+      { resolution: "480p", status: "ready", workerId: "worker-02", processingTime: 22 },
+      { resolution: "720p", status: "ready", workerId: "worker-03", processingTime: 36 },
+      { resolution: "1080p", status: "ready", workerId: "worker-04", processingTime: 58 },
+      { resolution: "1440p", status: "ready", workerId: "worker-05", processingTime: 92 },
     ],
   },
 ];
@@ -73,7 +83,20 @@ function getStoredVideos(): Video[] {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(MOCK_VIDEOS));
       return MOCK_VIDEOS;
     }
-    return JSON.parse(data);
+    const parsed: Video[] = JSON.parse(data);
+    // Ensure demo cards have the latest working playback URLs and ready status
+    return parsed.map((item) => {
+      const demoMatch = MOCK_VIDEOS.find((m) => m.id === item.id);
+      if (demoMatch) {
+        return {
+          ...item,
+          status: "ready",
+          playbackUrl: demoMatch.playbackUrl,
+          renditions: demoMatch.renditions,
+        };
+      }
+      return item;
+    });
   } catch (e) {
     console.error("Failed to read from localStorage:", e);
     return MOCK_VIDEOS;
@@ -90,85 +113,87 @@ function saveStoredVideos(videos: Video[]) {
 }
 
 /**
- * Direct browser S3 upload via presigned PUT URL using XMLHttpRequest for real-time progress.
+ * Direct browser S3 upload via presigned PUT URL using Axios with real-time onUploadProgress.
  */
-export function uploadFileToS3WithProgress(
+export async function uploadFileToS3WithProgress(
   uploadUrl: string,
   file: File,
   onProgress: (percent: number, loaded: number, total: number) => void
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("PUT", uploadUrl, true);
-    xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
-
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const percent = Math.round((event.loaded / event.total) * 100);
-        onProgress(percent, event.loaded, event.total);
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve();
-      } else {
-        reject(new Error(`S3 direct upload failed with HTTP ${xhr.status}: ${xhr.statusText}`));
-      }
-    };
-
-    xhr.onerror = () => {
-      reject(new Error("Network error occurred during S3 direct upload"));
-    };
-
-    xhr.send(file);
-  });
+  try {
+    await axios.put(uploadUrl, file, {
+      headers: {
+        "Content-Type": file.type || "video/mp4",
+      },
+      onUploadProgress: (progressEvent) => {
+        const total = progressEvent.total || file.size;
+        const loaded = progressEvent.loaded;
+        const percent = Math.round((loaded / total) * 100);
+        onProgress(percent, loaded, total);
+      },
+    });
+  } catch (error: any) {
+    console.error("S3 direct upload error:", error);
+    throw new Error(error.response?.statusText || error.message || "Failed to upload file directly to S3");
+  }
 }
 
 export const VideoAPI = {
   async getVideos(): Promise<Video[]> {
+    let apiVideos: Video[] = [];
     if (API_BASE_URL) {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/videos`);
-        if (res.ok) {
-          const data = await res.json();
-          return data.map((v: any) => ({
-            id: v.id,
-            filename: v.original_filename,
-            size: v.file_size_bytes,
-            mimeType: v.content_type,
-            status: v.status.toLowerCase() as any,
-            createdAt: v.created_at,
-            renditions: [],
-          }));
-        }
+        const res = await apiClient.get("/api/videos");
+        apiVideos = res.data.map((v: any) => ({
+          id: v.id,
+          filename: v.original_filename,
+          size: v.file_size_bytes,
+          duration: v.duration_seconds,
+          width: v.source_width,
+          height: v.source_height,
+          mimeType: v.content_type,
+          status: v.status.toLowerCase() as any,
+          createdAt: v.created_at,
+          renditions: [],
+        }));
       } catch (e) {
         console.warn("FastAPI backend not reachable, using local storage demo dataset", e);
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    return getStoredVideos();
+    
+    // Combine live backend uploaded videos with the 3 demo cards (Big Buck Bunny, etc.)
+    const storedDemos = getStoredVideos();
+    const demoCards = storedDemos.filter(v => v.id.startsWith("vid_demo_"));
+
+    return [...apiVideos, ...demoCards];
   },
 
   async getVideo(id: string): Promise<Video | null> {
+    // If requesting one of the demo cards (Big Buck Bunny, etc.)
+    if (id.startsWith("vid_demo_")) {
+      const stored = getStoredVideos();
+      return stored.find((v) => v.id === id) || MOCK_VIDEOS.find((v) => v.id === id) || null;
+    }
+
     if (API_BASE_URL) {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/videos/${id}`);
-        if (res.ok) {
-          const v = await res.json();
-          return {
-            id: v.id,
-            filename: v.original_filename,
-            size: v.file_size_bytes,
-            mimeType: v.content_type,
-            status: v.status.toLowerCase() as any,
-            createdAt: v.created_at,
-            playbackUrl: v.original_url,
-            renditions: [],
-          };
-        }
+        const res = await apiClient.get(`/api/videos/${id}`);
+        const v = res.data;
+        return {
+          id: v.id,
+          filename: v.original_filename,
+          size: v.file_size_bytes,
+          duration: v.duration_seconds,
+          width: v.source_width,
+          height: v.source_height,
+          mimeType: v.content_type,
+          status: v.status.toLowerCase() as any,
+          createdAt: v.created_at,
+          playbackUrl: v.original_url,
+          renditions: [],
+        };
       } catch (e) {
-        console.warn("FastAPI backend not reachable, using local storage demo dataset", e);
+        console.warn("FastAPI backend not reachable for ID", id, e);
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -178,21 +203,21 @@ export const VideoAPI = {
 
   async createVideo(payload: CreateVideoPayload): Promise<{ video_id: string; upload_url: string; s3_key: string; expires_in: number; id?: string }> {
     if (API_BASE_URL) {
-      const res = await fetch(`${API_BASE_URL}/api/videos`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      try {
+        const res = await apiClient.post("/api/videos", {
           filename: payload.filename,
           content_type: payload.mimeType || "video/mp4",
           file_size_bytes: payload.size,
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: "Failed to initiate video upload" }));
-        throw new Error(err.detail || "Failed to initiate upload");
+          source_width: payload.width,
+          source_height: payload.height,
+          duration_seconds: payload.duration,
+        });
+        const data = res.data;
+        return { ...data, id: data.video_id };
+      } catch (error: any) {
+        const message = error.response?.data?.detail || error.message || "Failed to initiate upload";
+        throw new Error(message);
       }
-      const data = await res.json();
-      return { ...data, id: data.video_id };
     }
 
     // Demo fallback
@@ -229,23 +254,15 @@ export const VideoAPI = {
     };
   },
 
-  async requestUploadUrl(videoId: string, filename: string): Promise<{ uploadUrl: string; key: string }> {
-    return {
-      uploadUrl: "",
-      key: `videos/${videoId}/original/${filename}`,
-    };
-  },
-
   async completeUpload(videoId: string): Promise<any> {
     if (API_BASE_URL) {
-      const res = await fetch(`${API_BASE_URL}/api/videos/${videoId}/complete`, {
-        method: "POST",
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: "Failed to verify S3 upload" }));
-        throw new Error(err.detail || "Upload verification failed");
+      try {
+        const res = await apiClient.post(`/api/videos/${videoId}/complete`);
+        return res.data;
+      } catch (error: any) {
+        const message = error.response?.data?.detail || error.message || "Upload verification failed";
+        throw new Error(message);
       }
-      return await res.json();
     }
 
     // Demo fallback
@@ -260,13 +277,21 @@ export const VideoAPI = {
   },
 
   async deleteVideo(videoId: string): Promise<void> {
+    if (videoId.startsWith("vid_demo_")) {
+      const videos = getStoredVideos().filter((v) => v.id !== videoId);
+      saveStoredVideos(videos);
+      return;
+    }
+
     if (API_BASE_URL) {
-      const res = await fetch(`${API_BASE_URL}/api/videos/${videoId}`, {
-        method: "DELETE",
-      });
-      if (!res.ok && res.status !== 404) {
-        const err = await res.json().catch(() => ({ detail: "Failed to delete video asset" }));
-        throw new Error(err.detail || "Delete failed");
+      try {
+        await apiClient.delete(`/api/videos/${videoId}`);
+        return;
+      } catch (error: any) {
+        if (error.response?.status !== 404) {
+          const message = error.response?.data?.detail || error.message || "Delete failed";
+          throw new Error(message);
+        }
       }
       return;
     }
@@ -281,6 +306,6 @@ export const VideoAPI = {
     if (typeof window !== "undefined") {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(MOCK_VIDEOS));
     }
-    return MOCK_VIDEOS;
+    return this.getVideos();
   },
 };

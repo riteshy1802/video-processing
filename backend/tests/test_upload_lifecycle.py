@@ -1,5 +1,3 @@
-import pytest
-import pytest_asyncio
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
@@ -21,6 +19,7 @@ TestingSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
+
 async def override_get_db():
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -30,9 +29,11 @@ async def override_get_db():
         finally:
             await session.close()
 
+
 app.dependency_overrides[get_db] = override_get_db
 
 client = TestClient(app)
+
 
 def test_health_check():
     response = client.get("/health")
@@ -41,6 +42,7 @@ def test_health_check():
     assert data["status"] == "healthy"
     assert data["phase"] == 1
 
+
 def test_create_video_validation():
     # Invalid MIME type
     response = client.post(
@@ -48,8 +50,8 @@ def test_create_video_validation():
         json={
             "filename": "document.pdf",
             "content_type": "application/pdf",
-            "file_size_bytes": 1024
-        }
+            "file_size_bytes": 1024,
+        },
     )
     assert response.status_code == 400
     assert "Unsupported content type" in response.json()["detail"]
@@ -60,11 +62,12 @@ def test_create_video_validation():
         json={
             "filename": "huge.mp4",
             "content_type": "video/mp4",
-            "file_size_bytes": 10 * 1024 * 1024 * 1024 * 1024  # Extremely huge
-        }
+            "file_size_bytes": 10 * 1024 * 1024 * 1024 * 1024,  # Extremely huge
+        },
     )
     assert response.status_code == 400
     assert "File size exceeds" in response.json()["detail"]
+
 
 @patch("app.services.s3.s3_service.generate_presigned_put_url")
 @patch("app.services.s3.s3_service.verify_object_exists")
@@ -82,8 +85,8 @@ def test_full_upload_lifecycle(mock_delete, mock_get_url, mock_verify, mock_put_
         json={
             "filename": "test_video.mp4",
             "content_type": "video/mp4",
-            "file_size_bytes": 1048576
-        }
+            "file_size_bytes": 1048576,
+        },
     )
     assert create_res.status_code == 201
     create_data = create_res.json()
@@ -112,7 +115,10 @@ def test_full_upload_lifecycle(mock_delete, mock_get_url, mock_verify, mock_put_
     detail_data = detail_res.json()
     assert detail_data["id"] == video_id
     assert detail_data["status"] == "UPLOADED"
-    assert detail_data["original_url"] == "https://test-bucket.s3.amazonaws.com/videos/mock/original/test.mp4?presigned=get"
+    assert (
+        detail_data["original_url"]
+        == "https://test-bucket.s3.amazonaws.com/videos/mock/original/test.mp4?presigned=get"
+    )
 
     # Step 5: Delete video
     delete_res = client.delete(f"/api/videos/{video_id}")

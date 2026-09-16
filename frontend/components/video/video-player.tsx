@@ -22,6 +22,7 @@ interface VideoPlayerProps {
   poster?: string;
   className?: string;
   autoPlay?: boolean;
+  onMetadataLoaded?: (metadata: { duration: number; width: number; height: number }) => void;
 }
 
 export function VideoPlayer({
@@ -29,6 +30,7 @@ export function VideoPlayer({
   poster,
   className,
   autoPlay = false,
+  onMetadataLoaded,
 }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -72,7 +74,15 @@ export function VideoPlayer({
 
     const updateTime = () => {
       setCurrentTime(video.currentTime);
-      setDuration(video.duration || 0);
+      const dur = video.duration || 0;
+      setDuration(dur);
+      if (onMetadataLoaded && (dur > 0 || video.videoWidth > 0)) {
+        onMetadataLoaded({
+          duration: Math.round(dur),
+          width: video.videoWidth,
+          height: video.videoHeight,
+        });
+      }
     };
 
     video.addEventListener("timeupdate", updateTime);
@@ -261,6 +271,11 @@ export function VideoPlayer({
     setHoverPos(offsetX);
     setHoverTime(calcTime);
 
+    // Only attempt live frame preview seeking for HLS (.m3u8) playlists.
+    // For raw MP4 files from S3, seeking on hover floods network Range requests and causes severe lag.
+    const isHls = src?.includes(".m3u8");
+    if (!isHls) return;
+
     const pVideo = previewVideoRef.current;
     if (!pVideo || !isFinite(calcTime)) return;
 
@@ -274,6 +289,7 @@ export function VideoPlayer({
       pendingSeekTimeRef.current = calcTime;
     }
   };
+
 
   const handleScrubberMouseLeave = () => {
     setHoverTime(null);
@@ -339,29 +355,32 @@ export function VideoPlayer({
             )}
             style={{ left: `${hoverPos}px` }}
           >
-            {/* Video Frame Preview Container */}
-            <div className="w-44 md:w-56 aspect-video bg-slate-950 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center relative shadow-inner">
-              <video
-                ref={previewVideoRef}
-                muted
-                playsInline
-                onSeeking={() => setIsPreviewSeeking(true)}
-                onSeeked={() => setIsPreviewSeeking(false)}
-                onCanPlay={() => setIsPreviewSeeking(false)}
-                onLoadedData={() => setIsPreviewSeeking(false)}
-                className={cn(
-                  "w-full h-full object-cover transition-opacity duration-150",
-                  isPreviewSeeking ? "opacity-40" : "opacity-100"
-                )}
-              />
+            {/* Video Frame Preview Container (HLS Only) */}
+            {src?.includes(".m3u8") && (
+              <div className="w-44 md:w-56 aspect-video bg-slate-950 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center relative shadow-inner">
+                <video
+                  ref={previewVideoRef}
+                  muted
+                  playsInline
+                  onSeeking={() => setIsPreviewSeeking(true)}
+                  onSeeked={() => setIsPreviewSeeking(false)}
+                  onCanPlay={() => setIsPreviewSeeking(false)}
+                  onLoadedData={() => setIsPreviewSeeking(false)}
+                  className={cn(
+                    "w-full h-full object-cover transition-opacity duration-150",
+                    isPreviewSeeking ? "opacity-40" : "opacity-100"
+                  )}
+                />
 
-              {/* Subtle loading spinner when seeking frames */}
-              {isPreviewSeeking && (
-                <div className="absolute inset-0 bg-slate-950/50 flex items-center justify-center text-sky-400">
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                </div>
-              )}
-            </div>
+                {/* Subtle loading spinner when seeking frames */}
+                {isPreviewSeeking && (
+                  <div className="absolute inset-0 bg-slate-950/50 flex items-center justify-center text-sky-400">
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  </div>
+                )}
+              </div>
+            )}
+
 
             {/* Timestamp */}
             <span className="font-bold text-sky-400 text-[11px]">

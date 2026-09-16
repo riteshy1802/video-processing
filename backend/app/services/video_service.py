@@ -1,6 +1,7 @@
 import uuid
+import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
@@ -14,15 +15,24 @@ from app.schemas.video import (
 )
 from app.services.s3 import s3_service
 from app.repositories.video_repository import video_repository
+from planner.producer import get_planner_producer, publish_planning_job
+
+logger = logging.getLogger("video_service")
+
 
 class VideoService:
-    async def create_video(self, db: AsyncSession, req: CreateVideoRequest) -> CreateVideoResponse:
+    async def create_video(
+        self, db: AsyncSession, req: CreateVideoRequest
+    ) -> CreateVideoResponse:
         """Validates payload, creates video record with PENDING_UPLOAD, and returns S3 presigned PUT URL."""
         # 1. Content type validation
-        if not req.content_type.startswith("video/") and req.content_type not in settings.ALLOWED_CONTENT_TYPES:
+        if (
+            not req.content_type.startswith("video/")
+            and req.content_type not in settings.ALLOWED_CONTENT_TYPES
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported content type '{req.content_type}'. Must be a valid video MIME type."
+                detail=f"Unsupported content type '{req.content_type}'. Must be a valid video MIME type.",
             )
 
         # 2. File size validation
@@ -30,7 +40,7 @@ class VideoService:
             max_mb = settings.MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File size exceeds maximum allowed limit of {max_mb} MB."
+                detail=f"File size exceeds maximum allowed limit of {max_mb} MB.",
             )
 
         # 3. Generate UUID and deterministic S3 key
@@ -43,6 +53,9 @@ class VideoService:
             original_filename=req.filename,
             content_type=req.content_type,
             file_size_bytes=req.file_size_bytes,
+            source_width=req.source_width,
+            source_height=req.source_height,
+            duration_seconds=req.duration_seconds,
             s3_bucket=s3_service.bucket,
             s3_key=s3_key,
             status="PENDING_UPLOAD",
@@ -56,30 +69,36 @@ class VideoService:
             video_id=created_video.id,
             event_type="VIDEO_CREATED",
             message=f"Video record created for {req.filename} ({req.file_size_bytes} bytes).",
-            event_metadata={"filename": req.filename, "size": req.file_size_bytes, "content_type": req.content_type}
+            event_metadata={
+                "filename": req.filename,
+                "size": req.file_size_bytes,
+                "content_type": req.content_type,
+            },
         )
 
         # 6. Generate presigned PUT URL for browser direct S3 upload
         upload_url = s3_service.generate_presigned_put_url(
             s3_key=s3_key,
             content_type=req.content_type,
-            expires_in=settings.PRESIGNED_UPLOAD_EXPIRY_SECONDS
+            expires_in=settings.PRESIGNED_UPLOAD_EXPIRY_SECONDS,
         )
 
         return CreateVideoResponse(
             video_id=created_video.id,
             upload_url=upload_url,
             s3_key=s3_key,
-            expires_in=settings.PRESIGNED_UPLOAD_EXPIRY_SECONDS
+            expires_in=settings.PRESIGNED_UPLOAD_EXPIRY_SECONDS,
         )
 
-    async def complete_upload(self, db: AsyncSession, video_id: uuid.UUID) -> CompleteUploadResponse:
-        """Verifies S3 object existence via HeadObject and marks video as UPLOADED."""
+    async def complete_upload(
+        self, db: AsyncSession, video_id: uuid.UUID
+    ) -> CompleteUploadResponse:
+        """Verifies S3 object existence via HeadObject, marks video as UPLOADED, and publishes Kafka planning job."""
         video = await video_repository.get_by_id(db, video_id)
         if not video:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Video asset with ID '{video_id}' not found."
+                detail=f"Video asset with ID '{video_id}' not found.",
             )
 
         # Perform S3 HeadObject verification - NEVER trust the frontend blindly
@@ -87,15 +106,12 @@ class VideoService:
         if not s3_meta:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="S3 verification failed: Video file object was not found in S3 bucket. Upload may have failed or been aborted."
+                detail="S3 verification failed: Video file object was not found in S3 bucket. Upload may have failed or been aborted.",
             )
 
         now = datetime.now(timezone.utc)
         updated_video = await video_repository.update_status(
-            db=db,
-            video=video,
-            status="UPLOADED",
-            uploaded_at=now
+            db=db, video=video, status="UPLOADED", uploaded_at=now
         )
 
         # Audit event
@@ -104,13 +120,33 @@ class VideoService:
             video_id=updated_video.id,
             event_type="UPLOAD_COMPLETED",
             message=f"Direct S3 upload verified successfully. Size: {s3_meta.get('content_length')} bytes.",
-            event_metadata=s3_meta
+            event_metadata=s3_meta,
         )
+
+        # Publish planning job to Kafka topic `planner.jobs`
+        try:
+            producer = get_planner_producer()
+            if producer:
+                publish_planning_job(producer=producer, video_id=str(updated_video.id))
+                producer.flush()
+                await video_repository.log_event(
+                    db=db,
+                    video_id=updated_video.id,
+                    event_type="PLANNING_JOB_SUBMITTED",
+                    message=f"Published planning job to Kafka topic '{settings.KAFKA_PLANNER_TOPIC}'.",
+                )
+                logger.info(
+                    f"Published planning job for video_id={updated_video.id} to Kafka topic '{settings.KAFKA_PLANNER_TOPIC}'"
+                )
+        except Exception as e:
+            logger.warning(
+                f"Could not publish planning job for video {updated_video.id} to Kafka: {e}"
+            )
 
         return CompleteUploadResponse(
             video_id=updated_video.id,
             status=updated_video.status,
-            uploaded_at=updated_video.uploaded_at or now
+            uploaded_at=updated_video.uploaded_at or now,
         )
 
     async def list_videos(self, db: AsyncSession) -> List[VideoResponse]:
@@ -118,20 +154,22 @@ class VideoService:
         videos = await video_repository.list_videos(db)
         return [VideoResponse.model_validate(v) for v in videos]
 
-    async def get_video_detail(self, db: AsyncSession, video_id: uuid.UUID) -> VideoDetailResponse:
+    async def get_video_detail(
+        self, db: AsyncSession, video_id: uuid.UUID
+    ) -> VideoDetailResponse:
         """Returns video details with short-lived presigned GET URL for original video playback."""
         video = await video_repository.get_by_id(db, video_id)
         if not video:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Video asset with ID '{video_id}' not found."
+                detail=f"Video asset with ID '{video_id}' not found.",
             )
 
         # Generate temporary presigned GET URL for viewing original asset
         presigned_get_url = s3_service.generate_presigned_get_url(
             s3_key=video.s3_key,
             expires_in=settings.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
-            response_filename=video.original_filename
+            response_filename=video.original_filename,
         )
 
         return VideoDetailResponse(
@@ -146,7 +184,7 @@ class VideoService:
             uploaded_at=video.uploaded_at,
             source_width=video.source_width,
             source_height=video.source_height,
-            duration_seconds=video.duration_seconds
+            duration_seconds=video.duration_seconds,
         )
 
     async def delete_video(self, db: AsyncSession, video_id: uuid.UUID) -> None:
@@ -155,7 +193,7 @@ class VideoService:
         if not video:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Video asset with ID '{video_id}' not found."
+                detail=f"Video asset with ID '{video_id}' not found.",
             )
 
         # Delete S3 Object
@@ -166,5 +204,6 @@ class VideoService:
 
         # Delete DB records (cascades renditions, chunks, events)
         await video_repository.delete_video(db, video)
+
 
 video_service = VideoService()

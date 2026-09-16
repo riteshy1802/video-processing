@@ -28,13 +28,22 @@ export default function LibraryPage() {
 
   useEffect(() => {
     fetchVideos();
+  }, [fetchVideos]);
+
+  // Only poll list if at least one video is in an active processing status
+  useEffect(() => {
+    const hasActiveProcessing = videos.some(
+      (v) => v.status === "processing" || v.status === "uploading"
+    );
+    if (!hasActiveProcessing) return;
+
     const interval = setInterval(async () => {
       const updated = await VideoAPI.getVideos();
       setVideos(updated);
-    }, 4000);
+    }, 5000);
 
     return () => clearInterval(interval);
-  }, [fetchVideos]);
+  }, [videos]);
 
   const handleResetData = async () => {
     const reset = await VideoAPI.resetMockData();

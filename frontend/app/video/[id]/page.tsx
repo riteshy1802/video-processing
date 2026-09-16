@@ -60,16 +60,27 @@ export default function VideoDetailPage({
 
   useEffect(() => {
     fetchVideo();
+  }, [fetchVideo]);
 
-    const interval = setInterval(async () => {
-      const data = await VideoAPI.getVideo(id);
-      if (data) {
-        setVideo(data);
-      }
-    }, 2500);
+  // Status polling temporarily disabled
+  // useEffect(() => {
+  //   const currentStatus = video?.status?.toLowerCase();
+  //   if (!video || (currentStatus !== "processing" && currentStatus !== "uploading" && currentStatus !== "pending_upload")) {
+  //     return;
+  //   }
+  //
+  //   const interval = setInterval(async () => {
+  //     const data = await VideoAPI.getVideo(id);
+  //     if (data) {
+  //       setVideo(data);
+  //     }
+  //   }, 5000);
+  //
+  //   return () => clearInterval(interval);
+  // }, [id, video?.status]);
 
-    return () => clearInterval(interval);
-  }, [id, fetchVideo]);
+
+
 
   const handleConfirmDelete = async () => {
     if (!video) return;
@@ -83,6 +94,19 @@ export default function VideoDetailPage({
       setIsDeleting(false);
     }
   };
+
+  const handleMetadataLoaded = useCallback((meta: { duration: number; width: number; height: number }) => {
+    setVideo((prev) => {
+      if (!prev) return null;
+      if (prev.duration && prev.width && prev.height) return prev;
+      return {
+        ...prev,
+        duration: prev.duration || meta.duration,
+        width: prev.width || meta.width,
+        height: prev.height || meta.height,
+      };
+    });
+  }, []);
 
   if (isLoading) {
     return (
@@ -112,13 +136,12 @@ export default function VideoDetailPage({
 
   const isReady = video.status === "ready";
   const resolutionLabel = getResolutionLabel(video.width, video.height);
-
   const renditionsSummary = video.renditions.map((r) => r.resolution).join(", ");
 
   return (
-    <div className="max-w-5xl mx-auto space-y-8">
-      {/* Navigation Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200/80 dark:border-slate-800/60 pb-6">
+    <div className="max-w-5xl mx-auto space-y-8 font-sans">
+      {/* Video Detail Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200/80 dark:border-slate-800/60 pb-6">
         <div className="space-y-1">
           <div className="flex items-center gap-3">
             <Link
@@ -127,7 +150,7 @@ export default function VideoDetailPage({
             >
               <ArrowLeft className="h-4 w-4" />
             </Link>
-            <h1 className="text-xl md:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-mono line-clamp-1">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 truncate max-w-xl">
               {video.filename}
             </h1>
             <VideoStatusBadge status={video.status} />
@@ -162,16 +185,29 @@ export default function VideoDetailPage({
       </div>
 
       {/* Main Player / Processing Display */}
-      {isReady ? (
+      {video.playbackUrl ? (
         <div className="space-y-6">
-          <VideoPlayer src={video.playbackUrl} autoPlay={false} />
+          <VideoPlayer
+            src={video.playbackUrl}
+            autoPlay={false}
+            onMetadataLoaded={handleMetadataLoaded}
+          />
           
-          <div className="p-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 flex items-center justify-between font-mono text-xs text-emerald-700 dark:text-emerald-400 shadow-xs">
-            <div className="flex items-center gap-2 font-medium">
-              <CheckCircle2 className="h-4 w-4 shrink-0" />
-              <span>All multi-resolution HLS renditions ({renditionsSummary}) are ready for adaptive streaming.</span>
+          {isReady ? (
+            <div className="p-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 flex items-center justify-between font-mono text-xs text-emerald-700 dark:text-emerald-400 shadow-xs">
+              <div className="flex items-center gap-2 font-medium">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                <span>All multi-resolution HLS renditions ({renditionsSummary}) are ready for adaptive streaming.</span>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="p-4 rounded-2xl border border-sky-500/30 bg-sky-500/5 flex items-center justify-between font-mono text-xs text-sky-700 dark:text-sky-400 shadow-xs">
+              <div className="flex items-center gap-2 font-medium">
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-sky-500" />
+                <span>Original S3 video asset verified and available for playback.</span>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <ProcessingState video={video} />

@@ -8,6 +8,7 @@ from app.config import settings
 
 logger = logging.getLogger("s3_service")
 
+
 class S3Service:
     def __init__(self):
         # Uses standard AWS SDK credential chain (IAM roles, environment vars, or local AWS CLI credentials)
@@ -15,7 +16,7 @@ class S3Service:
         s3_config = Config(
             region_name=settings.AWS_REGION,
             signature_version="s3v4",
-            s3={"addressing_style": "virtual"}
+            s3={"addressing_style": "virtual"},
         )
         client_kwargs: Dict[str, Any] = {"config": s3_config}
 
@@ -32,7 +33,7 @@ class S3Service:
     def sanitize_filename(self, filename: str) -> str:
         """Sanitizes filename for safe S3 object key paths."""
         # Replace un-safe characters with underscore, keeping alphanumeric, dots, dashes, underscores
-        clean_name = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+        clean_name = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
         # Avoid leading/trailing dots or spaces
         clean_name = clean_name.strip(" .")
         return clean_name or "video.mp4"
@@ -43,7 +44,10 @@ class S3Service:
         return f"videos/{video_id}/original/{sanitized}"
 
     def generate_presigned_put_url(
-        self, s3_key: str, content_type: str, expires_in: int = settings.PRESIGNED_UPLOAD_EXPIRY_SECONDS
+        self,
+        s3_key: str,
+        content_type: str,
+        expires_in: int = settings.PRESIGNED_UPLOAD_EXPIRY_SECONDS,
     ) -> str:
         """Generates short-lived presigned PUT URL for browser direct S3 upload."""
         try:
@@ -63,7 +67,10 @@ class S3Service:
             raise RuntimeError(f"Error generating presigned upload URL: {e}")
 
     def generate_presigned_get_url(
-        self, s3_key: str, expires_in: int = settings.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS, response_filename: Optional[str] = None
+        self,
+        s3_key: str,
+        expires_in: int = settings.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
+        response_filename: Optional[str] = None,
     ) -> str:
         """Generates short-lived presigned GET URL for temporary original video access."""
         try:
@@ -93,10 +100,14 @@ class S3Service:
         """
         try:
             response = self.s3_client.head_object(Bucket=self.bucket, Key=s3_key)
+            last_mod = response.get("LastModified")
+            if hasattr(last_mod, "isoformat"):
+                last_mod = last_mod.isoformat()
+
             return {
                 "content_length": response.get("ContentLength"),
                 "content_type": response.get("ContentType"),
-                "last_modified": response.get("LastModified"),
+                "last_modified": str(last_mod) if last_mod is not None else None,
                 "etag": response.get("ETag"),
             }
         except ClientError as e:
@@ -116,5 +127,6 @@ class S3Service:
         except ClientError as e:
             logger.error(f"Failed to delete S3 key {s3_key}: {e}")
             return False
+
 
 s3_service = S3Service()

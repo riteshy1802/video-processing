@@ -10,8 +10,10 @@ if TYPE_CHECKING:
     from app.models.video import Video
     from app.models.chunk import Chunk
 
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
 
 class Rendition(Base):
     __tablename__ = "renditions"
@@ -23,7 +25,10 @@ class Rendition(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     video_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("videos.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("videos.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     resolution: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(
@@ -31,15 +36,17 @@ class Rendition(Base):
     )
     s3_prefix: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     playlist_s3_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    
+
     processing_started_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    processing_time_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    
+    processing_time_seconds: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )

@@ -10,7 +10,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.config import settings
 from app.database import Base
-import app.models  # Ensures all SQLAlchemy models are registered in Base.metadata
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -20,10 +19,11 @@ config = context.config
 if config.config_file_name:
     fileConfig(config.config_file_name)
 
-# Overwrite database URL with sync database URL from settings
-config.set_main_option("sqlalchemy.url", settings.sync_database_url)
+# Overwrite database URL with sync database URL from settings (escaping % for configparser)
+config.set_main_option("sqlalchemy.url", settings.sync_database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
+
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
@@ -38,6 +38,7 @@ def run_migrations_offline() -> None:
     with context.begin_transaction():
         context.run_migrations()
 
+
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     connectable = engine_from_config(
@@ -47,12 +48,11 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()
+
 
 if context.is_offline_mode():
     run_migrations_offline()

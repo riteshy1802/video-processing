@@ -24,14 +24,20 @@ async def main_async():
                 f"Processing job: chunk_id={chunk_id} | partition={message.partition} | offset={message.offset}"
             )
 
-            # Execute main worker logic to print/process chunk data
-            await main_worker(chunk_id)
+            try:
+                # Execute main worker logic to print/process chunk data
+                await main_worker(chunk_id)
+                # Manually commit offset after job execution
+                consumer.commit()
+                logger.info(f"Committed Kafka offset for {chunk_id}")
+            except Exception:
+                logger.exception(f"Chunk processing failed: {chunk_id}")
+                # NO Kafka commit
 
-            # Manually commit offset after job execution
-            consumer.commit()
-            logger.info(f"Committed offset {message.offset} for chunk_id={chunk_id}")
     except KeyboardInterrupt:
+
         logger.info("Worker shutting down gracefully...")
+
     finally:
         consumer.close()
 

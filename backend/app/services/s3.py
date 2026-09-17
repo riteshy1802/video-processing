@@ -118,6 +118,98 @@ class S3Service:
             logger.error(f"S3 HeadObject error for key {s3_key}: {e}")
             raise e
 
+    def upload_file(
+        self,
+        local_file_path: str,
+        s3_key: str,
+        content_type: Optional[str] = None,
+        extra_args: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Uploads a local file directly to S3.
+        Auto-detects Content-Type for HLS playlists and TS segment files if not provided.
+        Returns True if successful, False otherwise.
+        """
+        try:
+            upload_args = extra_args or {}
+
+            if not content_type:
+                file_str = str(local_file_path)
+                if file_str.endswith(".m3u8"):
+                    content_type = "application/x-mpegURL"
+                elif file_str.endswith(".ts"):
+                    content_type = "video/mp2t"
+                elif file_str.endswith(".mp4"):
+                    content_type = "video/mp4"
+
+            if content_type:
+                upload_args["ContentType"] = content_type
+
+            self.s3_client.upload_file(
+                Filename=str(local_file_path),
+                Bucket=self.bucket,
+                Key=s3_key,
+                ExtraArgs=upload_args if upload_args else None,
+            )
+            logger.info(f"Successfully uploaded '{local_file_path}' to s3://{self.bucket}/{s3_key}")
+            return True
+        except ClientError as e:
+            logger.error(f"Failed to upload '{local_file_path}' to s3://{self.bucket}/{s3_key}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error uploading '{local_file_path}' to s3://{self.bucket}/{s3_key}: {e}")
+            return False
+
+    def upload_directory(
+        self,
+        local_dir_path: str,
+        s3_prefix: str,
+    ) -> int:
+        """
+        Uploads all files inside a local directory to S3 under the given s3_prefix.
+        Returns the number of files successfully uploaded.
+        """
+        dir_path = Path(local_dir_path)
+        if not dir_path.is_dir():
+            logger.error(f"Directory path '{local_dir_path}' does not exist or is not a directory.")
+            return 0
+
+        prefix = s3_prefix.rstrip("/") + "/"
+        uploaded_count = 0
+
+        for file_path in dir_path.rglob("*"):
+            if file_path.is_file():
+                relative_path = file_path.relative_to(dir_path)
+                s3_key = f"{prefix}{relative_path}"
+                if self.upload_file(str(file_path), s3_key):
+                    uploaded_count += 1
+
+        logger.info(f"Successfully uploaded {uploaded_count} file(s) from '{local_dir_path}' to s3://{self.bucket}/{prefix}")
+        return uploaded_count
+
+    def download_file(self, s3_key: str, local_file_path: str) -> bool:
+        """
+        Downloads an object from S3 bucket to a local file path.
+        Returns True if successful, False otherwise.
+        """
+        try:
+            path = Path(local_file_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            self.s3_client.download_file(
+                Bucket=self.bucket,
+                Key=s3_key,
+                Filename=str(path),
+            )
+            logger.info(f"Successfully downloaded s3://{self.bucket}/{s3_key} to '{local_file_path}'")
+            return True
+        except ClientError as e:
+            logger.error(f"Failed to download s3://{self.bucket}/{s3_key} to '{local_file_path}': {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error downloading s3://{self.bucket}/{s3_key}': {e}")
+            return False
+
     def delete_object(self, s3_key: str) -> bool:
         """Deletes object from S3 bucket."""
         try:
@@ -130,3 +222,4 @@ class S3Service:
 
 
 s3_service = S3Service()
+

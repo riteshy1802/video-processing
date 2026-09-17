@@ -72,6 +72,15 @@ class Settings(BaseSettings):
         default="video-transcoders",
         description="Name of the consumer group for the worker doing video rendition processing",
     )
+    KAFKA_FINALIZE_TOPIC: str = Field(
+        default="finalize.jobs",
+        description="Name of the finalizer (rendition specific) topic",
+    )
+    KAFKA_FINALIZE_GROUP_ID: str = Field(
+        default="video-finalizers",
+        description="Name of the consumer group for the finalizers doing final chunk aggregations",
+    )
+
     SUPPORTED_RENDITIONS: List[int] = Field(
         default=[360, 480, 720, 1080, 1440],
         description="The renditions which are supported",

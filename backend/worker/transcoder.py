@@ -10,6 +10,7 @@ from app.services.s3 import s3_service
 from app.config import settings
 from datetime import datetime, timezone
 from finalizer.rendition_finalizer import check_rendition_ready
+from worker.producer import publish_finalize_jobs_for_each_rendition
 
 logger = logging.getLogger("transcoder")
 
@@ -45,10 +46,7 @@ async def fetch_chunk_rendition_video_data(chunk_id: str):
         return result.mappings().first()
 
 
-async def upload_hls_chunks(
-    local_directory: Path,
-    s3_prefix: str
-) -> int:
+async def upload_hls_chunks(local_directory: Path, s3_prefix: str) -> int:
     """
     Uploads the HLS chunks (.m3u8 playlist and .ts segments) from local_directory to S3 at s3_prefix.
     """
@@ -68,19 +66,18 @@ async def upload_hls_chunks(
             s3_key=s3_key,
         )
         if not success:
-            raise RuntimeError(
-                f"Failed to upload {file_path.name} to S3"
-            )
+            raise RuntimeError(f"Failed to upload {file_path.name} to S3")
         uploaded_count += 1
 
     return uploaded_count
+
 
 async def transcode_chunk(
     input_url: str,
     chunk_id: str,
     resolution: str,
     start_seconds: float,
-    end_seconds: float
+    end_seconds: float,
 ):
     duration = end_seconds - start_seconds
     output_dir = Path(f"/tmp/video-transcoder/{chunk_id}")
@@ -91,19 +88,26 @@ async def transcode_chunk(
     command = [
         "ffmpeg",
         "-y",
-        "-ss", str(start_seconds),
-        "-i", input_url,
-        "-t", str(duration),
-
-        "-vf", f"scale=-2:{resolution}",
-        "-c:v", "libx264",
-        "-c:a", "aac",
-
-        "-f", "hls",
-        "-hls_time", "6",
-        "-hls_playlist_type", "vod",
-        "-hls_segment_filename", str(segment_pattern),
-
+        "-ss",
+        str(start_seconds),
+        "-i",
+        input_url,
+        "-t",
+        str(duration),
+        "-vf",
+        f"scale=-2:{resolution}",
+        "-c:v",
+        "libx264",
+        "-c:a",
+        "aac",
+        "-f",
+        "hls",
+        "-hls_time",
+        "6",
+        "-hls_playlist_type",
+        "vod",
+        "-hls_segment_filename",
+        str(segment_pattern),
         str(playlist),
     ]
     logger.info(
@@ -123,15 +127,12 @@ async def transcode_chunk(
     if process.returncode != 0:
         error = stderr.decode(errors="replace")
         logger.error(f"FFmpeg failed for chunk {chunk_id}:\n{error}")
-        raise RuntimeError(
-            f"FFmpeg exited with code {process.returncode}"
-        )
+        raise RuntimeError(f"FFmpeg exited with code {process.returncode}")
 
-    logger.info(
-        f"FFmpeg completed chunk={chunk_id}: {playlist}"
-    )
+    logger.info(f"FFmpeg completed chunk={chunk_id}: {playlist}")
 
     return output_dir
+
 
 async def update_chunk_status(chunk_id: str, status: str):
     chunk_uuid = uuid.UUID(chunk_id)
@@ -144,8 +145,10 @@ async def update_chunk_status(chunk_id: str, status: str):
         now = datetime.now(timezone.utc)
 
         if status == "PROCESSING":
-            if chunk.status!="PENDING":
-                raise ValueError(f"Cannot transition chunk {chunk_id} to PROCESSING from status {chunk.status}")
+            if chunk.status != "PENDING":
+                raise ValueError(
+                    f"Cannot transition chunk {chunk_id} to PROCESSING from status {chunk.status}"
+                )
             chunk.status = "PROCESSING"
             chunk.attempt_count += 1
             chunk.processing_started_at = now
@@ -164,15 +167,15 @@ async def update_chunk_status(chunk_id: str, status: str):
         await db.commit()
         logger.info(f"Chunk {chunk_id} marked {status}")
 
-def cleanup_chunk_directory(output_dir : Path):
+
+def cleanup_chunk_directory(output_dir: Path):
     try:
         if output_dir.exists():
             shutil.rmtree(output_dir)
             logger.info(f"Cleaned temporary directory: {output_dir}")
     except Exception as e:
-        logger.warning(
-            f"Failed to clean temporary directory {output_dir}: {e}"
-        )
+        logger.warning(f"Failed to clean temporary directory {output_dir}: {e}")
+
 
 async def main_worker(chunk_id: str):
     """
@@ -186,9 +189,9 @@ async def main_worker(chunk_id: str):
 
     # Generate the S3 pre-signed url
     presigned_url = s3_service.generate_presigned_get_url(
-        s3_key=result['s3_key'],
+        s3_key=result["s3_key"],
         expires_in=settings.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
-        response_filename=result['original_filename'],
+        response_filename=result["original_filename"],
     )
     await update_chunk_status(chunk_id, "PROCESSING")
     output_dir = await transcode_chunk(
@@ -196,20 +199,28 @@ async def main_worker(chunk_id: str):
         chunk_id=str(result["id"]),
         resolution=result["resolution"],
         start_seconds=result["start_seconds"],
-        end_seconds=result["end_seconds"]
+        end_seconds=result["end_seconds"],
     )
 
     logger.info(f"Transcoded chunk to local directory: {output_dir}")
 
     # Upload HLS chunk files to S3 prefix
     uploaded_count = await upload_hls_chunks(
-        local_directory=output_dir,
-        s3_prefix=result["temporary_s3_prefix"]
+        local_directory=output_dir, s3_prefix=result["temporary_s3_prefix"]
     )
 
     await update_chunk_status(chunk_id, "DONE")
+
     # Check if all the chunks have been covered or not for this Rendition before going with playlist assembly
-    await check_rendition_ready(rendition_id=result['rendition_id'])
+    all_chunks_covered_for_this_rendition = await check_rendition_ready(
+        rendition_id=result["rendition_id"]
+    )
+
+    rendition_id = result["rendition_id"]
+
+    if all_chunks_covered_for_this_rendition:
+        publish_finalize_jobs_for_each_rendition(rendition_id)
+
     cleanup_chunk_directory(output_dir)
 
     print("=" * 60)

@@ -50,7 +50,7 @@ class ChunkRepository:
         if status == "PROCESSING":
             chunk.processing_started_at = now
             chunk.attempt_count += 1
-        elif status == "COMPLETED":
+        elif status in ("DONE", "COMPLETED"):
             chunk.completed_at = now
             if processing_time_seconds is not None:
                 chunk.processing_time_seconds = processing_time_seconds
@@ -69,10 +69,10 @@ class ChunkRepository:
     async def are_all_chunks_completed(
         self, db: AsyncSession, rendition_id: uuid.UUID
     ) -> bool:
-        """Checks if all chunks belonging to a rendition are COMPLETED."""
+        """Checks if all chunks belonging to a rendition are DONE."""
         stmt = (
             select(Chunk.id)
-            .where(Chunk.rendition_id == rendition_id, Chunk.status != "COMPLETED")
+            .where(Chunk.rendition_id == rendition_id, Chunk.status != "DONE")
             .limit(1)
         )
         result = await db.execute(stmt)

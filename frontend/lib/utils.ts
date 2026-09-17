@@ -49,19 +49,22 @@ export function formatDate(dateString: string): string {
 
 
 export function getExpectedRenditions(height?: number): ResolutionType[] {
-  if (!height || height <= 360) {
-    return ["360p"];
-  }
-  if (height <= 480) {
-    return ["360p", "480p"];
-  }
-  if (height <= 720) {
-    return ["360p", "480p", "720p"];
-  }
-  if (height <= 1080) {
-    return ["360p", "480p", "720p", "1080p"];
-  }
-  return ["360p", "480p", "720p", "1080p", "1440p"];
+  if (!height) return ["360p"];
+  
+  const RENDITIONS: { label: ResolutionType; targetHeight: number }[] = [
+    { label: "360p", targetHeight: 360 },
+    { label: "480p", targetHeight: 480 },
+    { label: "720p", targetHeight: 720 },
+    { label: "1080p", targetHeight: 1080 },
+    { label: "1440p", targetHeight: 1440 },
+    { label: "2160p", targetHeight: 2160 },
+  ];
+
+  const matched = RENDITIONS.filter(
+    (r) => height >= r.targetHeight * 0.9 || r.targetHeight === 360
+  ).map((r) => r.label);
+
+  return matched.length > 0 ? matched : ["360p"];
 }
 
 export function getResolutionLabel(width?: number, height?: number): string {

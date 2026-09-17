@@ -2,6 +2,7 @@ import boto3
 from botocore.exceptions import ClientError
 from botocore.config import Config
 import logging
+from pathlib import Path
 import re
 from typing import Dict, Any, Optional
 from app.config import settings
@@ -151,13 +152,19 @@ class S3Service:
                 Key=s3_key,
                 ExtraArgs=upload_args if upload_args else None,
             )
-            logger.info(f"Successfully uploaded '{local_file_path}' to s3://{self.bucket}/{s3_key}")
+            logger.info(
+                f"Successfully uploaded '{local_file_path}' to s3://{self.bucket}/{s3_key}"
+            )
             return True
         except ClientError as e:
-            logger.error(f"Failed to upload '{local_file_path}' to s3://{self.bucket}/{s3_key}: {e}")
+            logger.error(
+                f"Failed to upload '{local_file_path}' to s3://{self.bucket}/{s3_key}: {e}"
+            )
             return False
         except Exception as e:
-            logger.error(f"Unexpected error uploading '{local_file_path}' to s3://{self.bucket}/{s3_key}: {e}")
+            logger.error(
+                f"Unexpected error uploading '{local_file_path}' to s3://{self.bucket}/{s3_key}: {e}"
+            )
             return False
 
     def upload_directory(
@@ -171,7 +178,9 @@ class S3Service:
         """
         dir_path = Path(local_dir_path)
         if not dir_path.is_dir():
-            logger.error(f"Directory path '{local_dir_path}' does not exist or is not a directory.")
+            logger.error(
+                f"Directory path '{local_dir_path}' does not exist or is not a directory."
+            )
             return 0
 
         prefix = s3_prefix.rstrip("/") + "/"
@@ -184,7 +193,9 @@ class S3Service:
                 if self.upload_file(str(file_path), s3_key):
                     uploaded_count += 1
 
-        logger.info(f"Successfully uploaded {uploaded_count} file(s) from '{local_dir_path}' to s3://{self.bucket}/{prefix}")
+        logger.info(
+            f"Successfully uploaded {uploaded_count} file(s) from '{local_dir_path}' to s3://{self.bucket}/{prefix}"
+        )
         return uploaded_count
 
     def download_file(self, s3_key: str, local_file_path: str) -> bool:
@@ -201,13 +212,19 @@ class S3Service:
                 Key=s3_key,
                 Filename=str(path),
             )
-            logger.info(f"Successfully downloaded s3://{self.bucket}/{s3_key} to '{local_file_path}'")
+            logger.info(
+                f"Successfully downloaded s3://{self.bucket}/{s3_key} to '{local_file_path}'"
+            )
             return True
         except ClientError as e:
-            logger.error(f"Failed to download s3://{self.bucket}/{s3_key} to '{local_file_path}': {e}")
+            logger.error(
+                f"Failed to download s3://{self.bucket}/{s3_key} to '{local_file_path}': {e}"
+            )
             return False
         except Exception as e:
-            logger.error(f"Unexpected error downloading s3://{self.bucket}/{s3_key}': {e}")
+            logger.error(
+                f"Unexpected error downloading s3://{self.bucket}/{s3_key}': {e}"
+            )
             return False
 
     def delete_object(self, s3_key: str) -> bool:
@@ -220,6 +237,93 @@ class S3Service:
             logger.error(f"Failed to delete S3 key {s3_key}: {e}")
             return False
 
+    def get_text_file(self, s3_key: str) -> Optional[str]:
+        """
+        Reads a text file (e.g. .m3u8 playlist) from S3 directly into a string.
+        """
+        try:
+            response = self.s3_client.get_object(
+                Bucket=self.bucket,
+                Key=s3_key,
+            )
+            return response["Body"].read().decode("utf-8")
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code in ("404", "NoSuchKey", "NotFound"):
+                logger.warning(f"S3 text file not found for key: {s3_key}")
+                return None
+            logger.error(f"Failed to read S3 text file {s3_key}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error reading S3 text file {s3_key}: {e}")
+            raise
+
+    def copy_object(self, source_key: str, destination_key: str) -> bool:
+        """
+        Copies an S3 object from source_key to destination_key within the same bucket.
+        """
+        try:
+            self.s3_client.copy_object(
+                Bucket=self.bucket,  # Use self.bucket
+                CopySource={
+                    "Bucket": self.bucket,  # Use self.bucket
+                    "Key": source_key,
+                },
+                Key=destination_key,
+            )
+            logger.info(f"Copied S3 object: {source_key} -> {destination_key}")
+            return True
+        except Exception as e:
+            logger.error(
+                f"Failed to copy S3 object {source_key} -> {destination_key}: {e}"
+            )
+            return False
+
+    def put_text_file(
+        self,
+        s3_key: str,
+        content: str,
+        content_type: str = "application/vnd.apple.mpegurl",
+    ) -> None:
+        """
+        To put a file directly from server to S3
+        """
+        try:
+            self.s3_client.put_object(
+                Bucket=self.bucket,
+                Key=s3_key,
+                Body=content.encode("utf-8"),
+                ContentType=content_type,
+            )
+        except Exception as e:
+            logger.error(f"Failed to upload text file {s3_key}: {e}")
+            raise
+
+    def delete_prefix(self, prefix: str) -> None:
+        try:
+            prefix = prefix.rstrip("/") + "/"
+
+            paginator = self.s3_client.get_paginator("list_objects_v2")
+
+            for page in paginator.paginate(
+                Bucket=self.bucket,
+                Prefix=prefix,
+            ):
+                objects = page.get("Contents", [])
+
+                if not objects:
+                    continue
+
+                self.s3_client.delete_objects(
+                    Bucket=self.bucket,
+                    Delete={"Objects": [{"Key": obj["Key"]} for obj in objects]},
+                )
+
+            logger.info(f"Deleted S3 prefix: {prefix}")
+
+        except Exception as e:
+            logger.error(f"Failed to delete S3 prefix {prefix}: {e}")
+            raise
+
 
 s3_service = S3Service()
-

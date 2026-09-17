@@ -19,7 +19,7 @@ def create_worker_producer() -> KafkaProducer:
     )
 
 
-def get_planner_producer() -> Optional[KafkaProducer]:
+def get_worker_producer() -> Optional[KafkaProducer]:
     global _producer_instance
     if _producer_instance is None:
         try:
@@ -33,6 +33,47 @@ def get_planner_producer() -> Optional[KafkaProducer]:
 
 
 def publish_chunk(producer: KafkaProducer, chunk_id: str):
-    message = {"chunk_id": chunk_id}
-    future = producer.send(settings.KAFKA_WORKER_TOPIC, value=message)
+    message = {"chunk_id": str(chunk_id)}
+    future = producer.send(
+        settings.KAFKA_WORKER_TOPIC,
+        key=str(chunk_id).encode("utf-8"),
+        value=message,
+    )
     return future
+
+
+# To publish the finalize jobs in the Kafka topic :
+
+
+def publish_finalize_jobs_for_each_rendition(
+    rendition_id: str,
+    producer: Optional[KafkaProducer] = None,
+):
+    """
+    Used to finalize all the chunks group them together under one rendition
+    """
+    if producer is None:
+        producer = get_worker_producer()
+
+    if producer is None:
+        logger.error(
+            f"Cannot publish finalize job for rendition {rendition_id}: Kafka producer unavailable."
+        )
+        return None
+
+    message = {"rendition_id": str(rendition_id)}
+    future = producer.send(
+        settings.KAFKA_FINALIZE_TOPIC,
+        key=str(rendition_id).encode("utf-8"),
+        value=message,
+    )
+
+    metadata = future.get(timeout=10)
+
+    logger.info(
+        f"Published finalize job: "
+        f"rendition_id={rendition_id} "
+        f"partition={metadata.partition} "
+        f"offset={metadata.offset}"
+    )
+    return metadata

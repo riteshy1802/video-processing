@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import uuid
 import asyncio
 import logging
@@ -7,6 +8,7 @@ from app.repositories.video_repository import video_repository
 from app.repositories.rendition_repository import rendition_repository
 from app.models.rendition import Rendition
 from app.models.chunk import Chunk
+from worker.producer import get_worker_producer, publish_chunk
 
 logger = logging.getLogger("planner")
 AVAILABLE_RENDITIONS = settings.SUPPORTED_RENDITIONS
@@ -14,14 +16,18 @@ AVAILABLE_RENDITIONS = settings.SUPPORTED_RENDITIONS
 
 def determine_renditions(source_height: int) -> list[int]:
     """
-    Return only renditions that do not upscale the source.
+    Return renditions that do not upscale the source significantly.
+    Allows a 10% height tolerance so near-1080p videos (e.g., 1018p, 1040p)
+    generate the 1080p rendition bucket.
 
     Example:
-        source_height = 1080
+        source_height = 1018
         -> [360, 480, 720, 1080]
     """
     return [
-        rendition for rendition in AVAILABLE_RENDITIONS if rendition <= source_height
+        rendition
+        for rendition in AVAILABLE_RENDITIONS
+        if rendition <= source_height or (source_height >= int(rendition * 0.9))
     ]
 
 
@@ -103,20 +109,24 @@ async def plan_video_async(video_id: str) -> bool:
             )
 
             # 6. Create Rendition + Chunk ORM objects
+            now = datetime.now(timezone.utc)
+            created_chunk_ids: list[str] = []
             for resolution in resolutions:
                 rendition_id = uuid.uuid4()
                 rendition = Rendition(
                     id=rendition_id,
                     video_id=video.id,
                     resolution=resolution,
-                    status="PENDING",
+                    status="PROCESSING",
+                    processing_started_at=now,
                     s3_prefix=f"videos/{video.id}/processed/{resolution}p/",
                 )
                 db.add(rendition)
 
                 for index, (start_sec, end_sec) in enumerate(chunk_ranges):
+                    chunk_id = uuid.uuid4()
                     chunk = Chunk(
-                        id=uuid.uuid4(),
+                        id=chunk_id,
                         rendition_id=rendition_id,
                         chunk_index=index,
                         start_seconds=start_sec,
@@ -128,6 +138,7 @@ async def plan_video_async(video_id: str) -> bool:
                         ),
                     )
                     db.add(chunk)
+                    created_chunk_ids.append(str(chunk_id))
 
             # 7. Update Video status & log VideoEvent audit log
             video.status = "PROCESSING"
@@ -148,6 +159,22 @@ async def plan_video_async(video_id: str) -> bool:
             logger.info(
                 f"Successfully planned and committed video {video.id} to database."
             )
+
+            # 9. Publish created chunk transcode jobs to Kafka topic transcode.jobs, Planning completed here.
+            try:
+                worker_producer = get_worker_producer()
+                if worker_producer:
+                    for cid in created_chunk_ids:
+                        publish_chunk(producer=worker_producer, chunk_id=cid)
+                    worker_producer.flush()
+                    logger.info(
+                        f"Published {len(created_chunk_ids)} chunk transcode job(s) for video {video.id} to Kafka topic '{settings.KAFKA_WORKER_TOPIC}'."
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Could not publish chunk transcode jobs to Kafka for video {video.id}: {e}"
+                )
+
             return True
 
         except Exception as e:

@@ -9,6 +9,7 @@ def create_planner_consumer() -> KafkaConsumer:
         bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
         group_id=settings.KAFKA_PLANNER_GROUP_ID,
         value_deserializer=lambda value: json.loads(value.decode("utf-8")),
-        enable_auto_commit=False,  # We dont want this commit to immediately occur
-        auto_offset_reset="earliest",  # Tells, that if you dont know where you left off, start from the first one.
+        enable_auto_commit=False,
+        auto_offset_reset="earliest",
+        max_poll_records=1,
     )

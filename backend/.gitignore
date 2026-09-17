@@ -56,3 +56,5 @@ ENV/
 *.swp
 *.swo
 .DS_Store
+
+.ruff_cache

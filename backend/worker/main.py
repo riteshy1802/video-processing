@@ -6,6 +6,7 @@ from worker.transcoder import main_worker
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
+logging.getLogger("kafka").setLevel(logging.WARNING)
 logger = logging.getLogger("worker_main")
 
 
@@ -35,7 +36,6 @@ async def main_async():
                 # NO Kafka commit
 
     except KeyboardInterrupt:
-
         logger.info("Worker shutting down gracefully...")
 
     finally:

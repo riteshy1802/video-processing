@@ -1,22 +1,22 @@
 from kafka.admin import KafkaAdminClient, NewTopic
-from kafka.errors import TopicAlreadyExistsError
 from app.config import settings
 
 admin = KafkaAdminClient(
     bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
     client_id="video-transcoder-admin",
 )
+existing_topics = set(admin.list_topics())
 
 topics = [
     NewTopic(name="planner.jobs", num_partitions=6, replication_factor=1),
     NewTopic(name="transcode.jobs", num_partitions=6, replication_factor=1),
+    NewTopic(name="finalize.jobs", num_partitions=3, replication_factor=1),
 ]
-
-try:
-    admin.create_topics(new_topics=topics)
-    for t in topics:
-        print(f"Created topic: {t.name}")
-except TopicAlreadyExistsError as topic_err:
-    print(f"One or more topics already exist. Error: {topic_err}")
-finally:
-    admin.close()
+missing_topics = [topic for topic in topics if topic.name not in existing_topics]
+if missing_topics:
+    admin.create_topics(new_topics=missing_topics)
+    for topic in missing_topics:
+        print(f"Created topic: {topic.name}")
+else:
+    print("All Kafka topics already exist.")
+admin.close()

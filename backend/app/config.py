@@ -65,7 +65,13 @@ class Settings(BaseSettings):
         default="video-planners",
         description="Name of the consumer group for the planner",
     )
-
+    KAFKA_WORKER_TOPIC: str = Field(
+        default="transcode.jobs", description="Name of the worker topic"
+    )
+    KAFKA_WORKER_GROUP_ID: str = Field(
+        default="video-transcoders",
+        description="Name of the consumer group for the worker doing video rendition processing",
+    )
     SUPPORTED_RENDITIONS: List[int] = Field(
         default=[360, 480, 720, 1080, 1440],
         description="The renditions which are supported",

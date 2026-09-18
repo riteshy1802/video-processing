@@ -111,6 +111,7 @@ async def plan_video_async(video_id: str) -> bool:
             # 6. Create Rendition + Chunk ORM objects
             now = datetime.now(timezone.utc)
             created_chunk_ids: list[str] = []
+            planned_renditions: list[dict] = []
             for resolution in resolutions:
                 rendition_id = uuid.uuid4()
                 rendition = Rendition(
@@ -122,6 +123,7 @@ async def plan_video_async(video_id: str) -> bool:
                     s3_prefix=f"videos/{video.id}/processed/{resolution}p/",
                 )
                 db.add(rendition)
+                planned_chunks: list[dict] = []
 
                 for index, (start_sec, end_sec) in enumerate(chunk_ranges):
                     chunk_id = uuid.uuid4()
@@ -139,6 +141,30 @@ async def plan_video_async(video_id: str) -> bool:
                     )
                     db.add(chunk)
                     created_chunk_ids.append(str(chunk_id))
+                    planned_chunks.append(
+                        {
+                            "chunk_id": str(chunk_id),
+                            "chunk_index": index,
+                            "rendition_id": str(rendition_id),
+                            "resolution": resolution,
+                            "status": "PENDING",
+                            "progress": 0.0,
+                            "start_seconds": start_sec,
+                            "end_seconds": end_sec,
+                        }
+                    )
+
+                planned_renditions.append(
+                    {
+                        "rendition_id": str(rendition_id),
+                        "resolution": resolution,
+                        "status": "PROCESSING",
+                        "progress": 0.0,
+                        "total_chunks": len(planned_chunks),
+                        "completed_chunks": 0,
+                        "chunks": planned_chunks,
+                    }
+                )
 
             # 7. Update Video status & log VideoEvent audit log
             video.status = "PROCESSING"
@@ -158,6 +184,23 @@ async def plan_video_async(video_id: str) -> bool:
             await db.commit()
             logger.info(
                 f"Successfully planned and committed video {video.id} to database."
+            )
+
+            # Publish after the DB commit: the UI can immediately replace its
+            # pending planner state with the actual rendition/chunk plan.
+            from app.services.redis_publisher import publish_event_sync
+
+            publish_event_sync(
+                video.id,
+                {
+                    "type": "planner.completed",
+                    "video_id": str(video.id),
+                    "status": "PROCESSING",
+                    "planner_status": "COMPLETED",
+                    "resolutions": resolutions,
+                    "chunks_count": len(chunk_ranges),
+                    "renditions": planned_renditions,
+                },
             )
 
             # 9. Publish created chunk transcode jobs to Kafka topic transcode.jobs, Planning completed here.

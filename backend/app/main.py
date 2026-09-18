@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
 from app.config import settings
-from app.api import videos
+from app.api import videos, events
 
 # Configure logging
 logging.basicConfig(
@@ -40,6 +40,7 @@ app.add_middleware(
 
 # Include API Routers
 app.include_router(videos.router)
+app.include_router(events.router)
 
 
 @app.get("/health", tags=["System"])

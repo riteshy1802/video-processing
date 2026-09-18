@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState, useCallback } from "react";
+import { use, useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { Video } from "@/types/video";
 import { VideoAPI } from "@/lib/api/videos";
@@ -10,6 +10,7 @@ import { ProcessingState } from "@/components/processing/processing-state";
 import { VideoPlayer } from "@/components/video/video-player";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
+import { useVideoProcessingEvents } from "@/lib/hooks/use-video-processing-events";
 import { 
   formatBytes, 
   formatDuration, 
@@ -25,7 +26,7 @@ import {
   Layers, 
   Trash2, 
   CheckCircle2,
-  RefreshCw
+  RefreshCw,
 } from "lucide-react";
 import { ConfirmationModal } from "@/components/ui/confirmation-modal";
 import { toast } from "sonner";
@@ -43,6 +44,8 @@ export default function VideoDetailPage({
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [selectedQuality, setSelectedQuality] = useState<string>("auto");
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const countdownTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const fetchVideo = useCallback(async () => {
     try {
@@ -63,25 +66,40 @@ export default function VideoDetailPage({
     fetchVideo();
   }, [fetchVideo]);
 
-  // Status polling temporarily disabled
-  // useEffect(() => {
-  //   const currentStatus = video?.status?.toLowerCase();
-  //   if (!video || (currentStatus !== "processing" && currentStatus !== "uploading" && currentStatus !== "pending_upload")) {
-  //     return;
-  //   }
-  //
-  //   const interval = setInterval(async () => {
-  //     const data = await VideoAPI.getVideo(id);
-  //     if (data) {
-  //       setVideo(data);
-  //     }
-  //   }, 5000);
-  //
-  //   return () => clearInterval(interval);
-  // }, [id, video?.status]);
+  const handleVideoCompleted = useCallback(() => {
+    if (countdown !== null) return;
+    setCountdown(10);
+  }, [countdown]);
 
+  const { processingState, isConnected, isCompleted } = useVideoProcessingEvents(id, {
+    enabled: !!video && (video.status || "").toLowerCase() !== "ready",
+    onVideoReady: handleVideoCompleted,
+  });
 
+  // Handle 5 -> 4 -> 3 -> 2 -> 1 countdown tick
+  useEffect(() => {
+    if (countdown === null) return;
 
+    if (countdown <= 0) {
+      window.location.reload();
+      setCountdown(null);
+      return;
+    }
+
+    countdownTimerRef.current = setTimeout(() => {
+      setCountdown((prev) => (prev !== null && prev > 0 ? prev - 1 : 0));
+    }, 1000);
+
+    return () => {
+      if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current);
+    };
+  }, [countdown]);
+
+  const handleForcePlay = () => {
+    if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current);
+    setCountdown(null);
+    window.location.reload();
+  };
 
   const handleConfirmDelete = async () => {
     if (!video) return;
@@ -135,7 +153,7 @@ export default function VideoDetailPage({
     );
   }
 
-  const isReady = video.status === "ready";
+  const isReady = (video.status || "").toLowerCase() === "ready";
   const resolutionLabel = getResolutionLabel(video.width, video.height);
   const renditionsSummary = video.renditions.map((r) => r.resolution).join(", ");
 
@@ -182,11 +200,12 @@ export default function VideoDetailPage({
               <Trash2 className="h-4 w-4" />
             </Button>
           </Tooltip>
+
         </div>
       </div>
 
       {/* Main Player / Processing Display */}
-      {video.playbackUrl ? (
+      {isReady && video.playbackUrl ? (
         <div className="space-y-6">
           <VideoPlayer
             src={video.playbackUrl}
@@ -197,24 +216,22 @@ export default function VideoDetailPage({
             renditions={video.renditions}
           />
           
-          {isReady ? (
-            <div className="p-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 flex items-center justify-between font-mono text-xs text-emerald-700 dark:text-emerald-400 shadow-xs">
-              <div className="flex items-center gap-2 font-medium">
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
-                <span>All multi-resolution HLS renditions ({renditionsSummary}) are ready for adaptive streaming.</span>
-              </div>
+          <div className="p-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 flex items-center justify-between font-mono text-xs text-emerald-700 dark:text-emerald-400 shadow-xs">
+            <div className="flex items-center gap-2 font-medium">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              <span>All multi-resolution HLS renditions ({renditionsSummary}) are ready for adaptive streaming.</span>
             </div>
-          ) : (
-            <div className="p-4 rounded-2xl border border-sky-500/30 bg-sky-500/5 flex items-center justify-between font-mono text-xs text-sky-700 dark:text-sky-400 shadow-xs">
-              <div className="flex items-center gap-2 font-medium">
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-sky-500" />
-                <span>Original S3 video asset verified and available for playback.</span>
-              </div>
-            </div>
-          )}
+          </div>
         </div>
       ) : (
-        <ProcessingState video={video} />
+        <ProcessingState
+          video={video}
+          processingState={processingState}
+          isConnected={isConnected}
+          isCompleted={isCompleted}
+          countdown={countdown}
+          onForcePlay={handleForcePlay}
+        />
       )}
 
       {/* Technical Specifications Grid */}

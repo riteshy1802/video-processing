@@ -115,3 +115,37 @@ a {
 .animate-transcode {
   animation: transcode-pulse 2s infinite ease-in-out;
 }
+
+@keyframes water-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.animate-water-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(6, 182, 212, 0.1) 0%,
+    rgba(16, 185, 129, 0.35) 50%,
+    rgba(6, 182, 212, 0.1) 100%
+  );
+  background-size: 200% 100%;
+  animation: water-shimmer 2.2s infinite linear;
+}
+
+/* Applied inside the measured progress fill, never to the whole rendition card. */
+.processing-progress-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.08) 32%,
+    rgba(255, 255, 255, 0.38) 50%,
+    rgba(255, 255, 255, 0.08) 68%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: water-shimmer 1.8s infinite linear;
+}

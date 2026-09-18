@@ -31,7 +31,9 @@ def build_master_playlist_url(video_id: uuid.UUID | str) -> Optional[str]:
 
     if domain and domain.strip():
         clean_domain = domain.strip()
-        if not clean_domain.startswith("http://") and not clean_domain.startswith("https://"):
+        if not clean_domain.startswith("http://") and not clean_domain.startswith(
+            "https://"
+        ):
             clean_domain = f"https://{clean_domain}"
         clean_domain = clean_domain.rstrip("/")
         return f"{clean_domain}/{s3_key}"
@@ -184,7 +186,7 @@ class VideoService:
         videos = await video_repository.list_videos(db)
         result = []
         for v in videos:
-            is_ready = (v.status or "").upper() in ("READY", "COMPLETED")
+            is_ready = (v.status or "").upper() == "READY"
             master_url = build_master_playlist_url(v.id) if is_ready else None
             renditions_list = getattr(v, "renditions", []) or []
             res = VideoResponse(
@@ -224,7 +226,7 @@ class VideoService:
             response_filename=video.original_filename,
         )
 
-        is_ready = (video.status or "").upper() in ("READY", "COMPLETED")
+        is_ready = (video.status or "").upper() == "READY"
         master_url = build_master_playlist_url(video.id) if is_ready else None
         playback_url = master_url if is_ready else presigned_get_url
         renditions_list = getattr(video, "renditions", []) or []

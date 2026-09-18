@@ -64,3 +64,51 @@ export interface CreateVideoPayload {
   height?: number;
   mimeType?: string;
 }
+
+export interface ChunkProgressState {
+  chunk_id: string;
+  chunk_index: number;
+  rendition_id: string;
+  resolution: string;
+  worker_id: string;
+  status: "PENDING" | "PROCESSING" | "DONE" | "FAILED";
+  progress: number;
+  start_seconds?: number;
+  end_seconds?: number;
+  error?: string;
+  updated_at?: string;
+}
+
+export interface RenditionProgressState {
+  rendition_id: string;
+  resolution: string;
+  status: "PENDING" | "PROCESSING" | "READY" | "FAILED";
+  progress: number;
+  total_chunks: number;
+  completed_chunks: number;
+  chunks: ChunkProgressState[];
+}
+
+export interface ProcessingSnapshot {
+  video_id: string;
+  video_status: string;
+  total_renditions: number;
+  total_chunks: number;
+  completed_chunks: number;
+  overall_progress: number;
+  renditions: RenditionProgressState[];
+}
+
+export interface SSEEventData {
+  type: string;
+  video_id: string;
+  status?: string;
+  rendition_id?: string;
+  resolution?: string;
+  chunk_id?: string;
+  chunk_index?: number;
+  worker_id?: string;
+  progress?: number;
+  error?: string;
+}
+

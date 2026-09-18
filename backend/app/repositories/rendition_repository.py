@@ -64,7 +64,7 @@ class RenditionRepository:
         rendition.status = status
         rendition.updated_at = now
 
-        if status == "COMPLETED":
+        if status == "READY":
             rendition.completed_at = now
 
         if error_message:
@@ -77,10 +77,10 @@ class RenditionRepository:
     async def are_all_renditions_completed(
         self, db: AsyncSession, video_id: uuid.UUID
     ) -> bool:
-        """Checks if all renditions belonging to a video are COMPLETED."""
+        """Checks if all renditions belonging to a video are READY."""
         stmt = (
             select(Rendition.id)
-            .where(Rendition.video_id == video_id, Rendition.status != "COMPLETED")
+            .where(Rendition.video_id == video_id, Rendition.status != "READY")
             .limit(1)
         )
         result = await db.execute(stmt)

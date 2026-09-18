@@ -103,6 +103,10 @@ class Settings(BaseSettings):
         default=40,
         description="Timeout in seconds before a FINALIZING video job is considered stale and reclaimed",
     )
+    REDIS_URL: str = Field(
+        default="redis://localhost:6380/0",
+        description="Redis connection URL for real-time progress Pub/Sub events",
+    )
 
     @property
     def async_database_url(self) -> str:

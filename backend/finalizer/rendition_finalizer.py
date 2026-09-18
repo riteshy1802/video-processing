@@ -5,6 +5,7 @@ from app.repositories.chunk_repository import chunk_repository
 from app.repositories.rendition_repository import rendition_repository
 from app.database import AsyncSessionLocal
 from app.services.s3 import s3_service
+from app.services.redis_publisher import publish_event_async
 from datetime import datetime, timezone
 from video_finalizer.all_rendition_final import check_all_renditions_complete
 from video_finalizer.producer import (
@@ -23,7 +24,7 @@ logger = logging.getLogger("finalizer")
 
 async def check_rendition_ready(rendition_id: str) -> bool:
     """
-    Return True only if every chunk belonging to this rendition has status COMPLETED or DONE.
+    Return True only if every chunk belonging to this rendition has status DONE.
     """
     try:
         rendition_uuid = (
@@ -173,6 +174,19 @@ async def finalize_rendition(rendition_id: str) -> bool:
             )
             return False
 
+        video_id = str(rendition.video_id)
+
+        await publish_event_async(
+            video_id,
+            {
+                "type": "rendition.processing",
+                "video_id": video_id,
+                "rendition_id": str(rendition.id),
+                "resolution": str(rendition.resolution),
+                "status": "PROCESSING",
+            },
+        )
+
         print("=" * 60)
         print(f"  Finalizing Rendition : {rendition.id} ({rendition.resolution}p)")
         print(f"  Total Chunks         : {len(chunks)}")
@@ -221,22 +235,39 @@ async def finalize_rendition(rendition_id: str) -> bool:
 
         await db.commit()
 
-        video_id = str(rendition.video_id)
+        await publish_event_async(
+            video_id,
+            {
+                "type": "rendition.ready",
+                "video_id": video_id,
+                "rendition_id": str(rendition.id),
+                "resolution": str(rendition.resolution),
+                "status": "READY",
+            },
+        )
+
         all_ready = await check_all_renditions_complete(video_id)
         if all_ready:
             producer = get_video_finalizer_producer()
             if producer is None:
                 raise RuntimeError("Could not initialize video finalizer producer")
-            # But keep one thing in mind, all the workers will try (and are allowed) to publish at the same time,
-            # what we do is claim in the database by changing the status = "FINALIZING",
-            # and if a worker picks a video having a status of FINALIZING, it should immediately drop it
-            # we need to handle that in our next consumer we have which will consume on our topic : KAFKA_FINALIZE_VIDEO_TOPIC
             publish_video_finalizer_job(
                 producer=producer,
                 video_id=video_id,
             )
+            # Ensure the video-finalizer receives the job before this consumer
+            # continues with cleanup or exits.
+            producer.flush()
 
         chunks_prefix = f"{final_prefix}/chunks"
-        s3_service.delete_prefix(chunks_prefix)
+        try:
+            s3_service.delete_prefix(chunks_prefix)
+        except Exception as cleanup_error:
+            # Cleanup is best-effort. A missing ListBucket/DeleteObject IAM
+            # permission must not turn a completed rendition into a failed one
+            # or prevent the video finalizer from being published.
+            logger.warning(
+                f"Could not delete temporary chunk prefix {chunks_prefix}: {cleanup_error}"
+            )
 
         return True

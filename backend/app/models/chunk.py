@@ -45,6 +45,7 @@ class Chunk(Base):
     status: Mapped[str] = mapped_column(
         String(50), nullable=False, default="PENDING", index=True
     )
+    progress_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     worker_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 

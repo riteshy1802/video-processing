@@ -2,11 +2,14 @@ import uuid
 import logging
 import asyncio
 import shutil
+import socket
+import time
 from pathlib import Path
 from app.database import AsyncSessionLocal
 from sqlalchemy import select
 from app.models import Chunk, Rendition, Video
 from app.services.s3 import s3_service
+from app.services.redis_publisher import publish_event_async
 from app.config import settings
 from datetime import datetime, timezone
 from finalizer.rendition_finalizer import check_rendition_ready
@@ -31,6 +34,7 @@ async def fetch_chunk_rendition_video_data(chunk_id: str):
                 Chunk.id,
                 Chunk.chunk_index,
                 Chunk.rendition_id,
+                Rendition.video_id,
                 Video.s3_key,
                 Video.original_filename,
                 Rendition.resolution,
@@ -75,19 +79,26 @@ async def upload_hls_chunks(local_directory: Path, s3_prefix: str) -> int:
 async def transcode_chunk(
     input_url: str,
     chunk_id: str,
+    video_id: str,
+    rendition_id: str,
     resolution: str,
+    chunk_index: int,
     start_seconds: float,
     end_seconds: float,
+    worker_id: str,
 ):
     duration = end_seconds - start_seconds
+    duration_us = max(1.0, duration * 1_000_000)
     output_dir = Path(f"/tmp/video-transcoder/{chunk_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
     playlist = output_dir / "index.m3u8"
     segment_pattern = output_dir / "segment_%03d.ts"
-    # output_file = output_dir / "output.mp4"
+
     command = [
         "ffmpeg",
         "-y",
+        "-progress",
+        "pipe:1",
         "-ss",
         str(start_seconds),
         "-i",
@@ -122,10 +133,52 @@ async def transcode_chunk(
         stderr=asyncio.subprocess.PIPE,
     )
 
-    stdout, stderr = await process.communicate()
+    last_publish_time = 0.0
+    last_progress = 0.0
+
+    stderr_chunks = []
+
+    async def read_stderr():
+        while True:
+            line = await process.stderr.readline()
+            if not line:
+                break
+            stderr_chunks.append(line)
+
+    stderr_task = asyncio.create_task(read_stderr())
+
+    while True:
+        line_bytes = await process.stdout.readline()
+        if not line_bytes:
+            break
+        line = line_bytes.decode(errors="replace").strip()
+        if line.startswith("out_time_us="):
+            try:
+                out_time_us = float(line.split("=")[1])
+                pct = round(min(99.0, max(0.0, (out_time_us / duration_us) * 100.0)), 1)
+                now = time.time()
+                if (
+                    now - last_publish_time > 0.5 and pct > last_progress
+                ) or pct >= 99.0:
+                    last_publish_time = now
+                    last_progress = pct
+                    await record_chunk_progress(
+                        chunk_id=chunk_id,
+                        video_id=video_id,
+                        rendition_id=rendition_id,
+                        resolution=resolution,
+                        chunk_index=chunk_index,
+                        worker_id=worker_id,
+                        progress=pct,
+                    )
+            except Exception as ex:
+                logger.debug(f"Error parsing FFmpeg progress line '{line}': {ex}")
+
+    await process.wait()
+    await stderr_task
 
     if process.returncode != 0:
-        error = stderr.decode(errors="replace")
+        error = b"".join(stderr_chunks).decode(errors="replace")
         logger.error(f"FFmpeg failed for chunk {chunk_id}:\n{error}")
         raise RuntimeError(f"FFmpeg exited with code {process.returncode}")
 
@@ -134,7 +187,16 @@ async def transcode_chunk(
     return output_dir
 
 
-async def update_chunk_status(chunk_id: str, status: str):
+async def update_chunk_status(
+    chunk_id: str,
+    status: str,
+    video_id: str | None = None,
+    rendition_id: str | None = None,
+    resolution: str | None = None,
+    chunk_index: int | None = None,
+    worker_id: str | None = None,
+    error_msg: str | None = None,
+):
     chunk_uuid = uuid.UUID(chunk_id)
     async with AsyncSessionLocal() as db:
         chunk = await db.get(Chunk, chunk_uuid)
@@ -152,8 +214,11 @@ async def update_chunk_status(chunk_id: str, status: str):
             chunk.status = "PROCESSING"
             chunk.attempt_count += 1
             chunk.processing_started_at = now
+            chunk.progress_percent = 0.0
+            chunk.worker_id = worker_id
         elif status == "DONE":
             chunk.status = "DONE"
+            chunk.progress_percent = 100.0
             chunk.completed_at = now
             if chunk.processing_started_at:
                 chunk.processing_time_seconds = (
@@ -166,6 +231,72 @@ async def update_chunk_status(chunk_id: str, status: str):
             raise ValueError(f"Invalid chunk status: {status}")
         await db.commit()
         logger.info(f"Chunk {chunk_id} marked {status}")
+
+    if video_id and rendition_id and resolution is not None and chunk_index is not None:
+        event_type = (
+            "chunk.started"
+            if status == "PROCESSING"
+            else "chunk.completed"
+            if status == "DONE"
+            else "chunk.failed"
+        )
+        progress_val = (
+            0.0 if status == "PROCESSING" else 100.0 if status == "DONE" else 0.0
+        )
+        payload = {
+            "type": event_type,
+            "video_id": video_id,
+            "rendition_id": rendition_id,
+            "chunk_id": chunk_id,
+            "chunk_index": chunk_index,
+            "resolution": resolution,
+            "worker_id": worker_id or socket.gethostname(),
+            "status": status,
+            "progress": progress_val,
+        }
+        if error_msg:
+            payload["error"] = error_msg
+        await publish_event_async(video_id, payload)
+
+
+async def record_chunk_progress(
+    *,
+    chunk_id: str,
+    video_id: str,
+    rendition_id: str,
+    resolution: str,
+    chunk_index: int,
+    worker_id: str,
+    progress: float,
+) -> None:
+    """Persist and publish a worker's latest chunk progress on the video channel."""
+    bounded_progress = round(min(99.0, max(0.0, progress)), 1)
+    async with AsyncSessionLocal() as db:
+        chunk = await db.get(Chunk, uuid.UUID(chunk_id))
+        if chunk is None:
+            raise ValueError(f"Chunk not found: {chunk_id}")
+        if chunk.status != "PROCESSING":
+            return
+        # Progress must never move backwards when FFmpeg emits a delayed line.
+        chunk.progress_percent = max(chunk.progress_percent or 0.0, bounded_progress)
+        chunk.worker_id = worker_id
+        persisted_progress = chunk.progress_percent
+        await db.commit()
+
+    await publish_event_async(
+        video_id,
+        {
+            "type": "chunk.progress",
+            "video_id": video_id,
+            "rendition_id": rendition_id,
+            "chunk_id": chunk_id,
+            "chunk_index": chunk_index,
+            "resolution": resolution,
+            "worker_id": worker_id,
+            "status": "PROCESSING",
+            "progress": persisted_progress,
+        },
+    )
 
 
 def cleanup_chunk_directory(output_dir: Path):
@@ -187,36 +318,75 @@ async def main_worker(chunk_id: str):
         logger.warning(f"No database records found for chunk_id: {chunk_id}")
         return
 
+    video_id = str(result["video_id"])
+    rendition_id = str(result["rendition_id"])
+    resolution = str(result["resolution"])
+    chunk_index = int(result["chunk_index"])
+    worker_id = socket.gethostname()
+
     # Generate the S3 pre-signed url
     presigned_url = s3_service.generate_presigned_get_url(
         s3_key=result["s3_key"],
         expires_in=settings.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
         response_filename=result["original_filename"],
     )
-    await update_chunk_status(chunk_id, "PROCESSING")
-    output_dir = await transcode_chunk(
-        input_url=presigned_url,
-        chunk_id=str(result["id"]),
-        resolution=result["resolution"],
-        start_seconds=result["start_seconds"],
-        end_seconds=result["end_seconds"],
-    )
 
-    logger.info(f"Transcoded chunk to local directory: {output_dir}")
+    try:
+        await update_chunk_status(
+            chunk_id=chunk_id,
+            status="PROCESSING",
+            video_id=video_id,
+            rendition_id=rendition_id,
+            resolution=resolution,
+            chunk_index=chunk_index,
+            worker_id=worker_id,
+        )
 
-    # Upload HLS chunk files to S3 prefix
-    uploaded_count = await upload_hls_chunks(
-        local_directory=output_dir, s3_prefix=result["temporary_s3_prefix"]
-    )
+        output_dir = await transcode_chunk(
+            input_url=presigned_url,
+            chunk_id=str(result["id"]),
+            video_id=video_id,
+            rendition_id=rendition_id,
+            resolution=resolution,
+            chunk_index=chunk_index,
+            start_seconds=result["start_seconds"],
+            end_seconds=result["end_seconds"],
+            worker_id=worker_id,
+        )
 
-    await update_chunk_status(chunk_id, "DONE")
+        logger.info(f"Transcoded chunk to local directory: {output_dir}")
+
+        # Upload HLS chunk files to S3 prefix
+        uploaded_count = await upload_hls_chunks(
+            local_directory=output_dir, s3_prefix=result["temporary_s3_prefix"]
+        )
+
+        await update_chunk_status(
+            chunk_id=chunk_id,
+            status="DONE",
+            video_id=video_id,
+            rendition_id=rendition_id,
+            resolution=resolution,
+            chunk_index=chunk_index,
+            worker_id=worker_id,
+        )
+    except Exception as e:
+        await update_chunk_status(
+            chunk_id=chunk_id,
+            status="FAILED",
+            video_id=video_id,
+            rendition_id=rendition_id,
+            resolution=resolution,
+            chunk_index=chunk_index,
+            worker_id=worker_id,
+            error_msg=str(e),
+        )
+        raise
 
     # Check if all the chunks have been covered or not for this Rendition before going with playlist assembly
     all_chunks_covered_for_this_rendition = await check_rendition_ready(
         rendition_id=result["rendition_id"]
     )
-
-    rendition_id = result["rendition_id"]
 
     if all_chunks_covered_for_this_rendition:
         publish_finalize_jobs_for_each_rendition(rendition_id)

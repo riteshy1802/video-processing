@@ -6,6 +6,7 @@ from app.models.video import Video
 from app.repositories.rendition_repository import rendition_repository
 from app.repositories.video_repository import video_repository
 from app.services.s3 import s3_service
+from app.services.redis_publisher import publish_event_async
 
 
 def calculate_rendition_width(
@@ -104,6 +105,15 @@ async def finalize_video(video_id: str) -> bool:
             return False
         logger.info(f"Video {video_id} successfully claimed for the finalization")
 
+        await publish_event_async(
+            video_id,
+            {
+                "type": "video.finalizing",
+                "video_id": video_id,
+                "status": "FINALIZING",
+            },
+        )
+
         # master m3u8 generation:
         master_playlist = generate_master_playlist(video=video, renditions=renditions)
         master_playlist_key = f"videos/{video.id}/processed/master.m3u8"
@@ -118,4 +128,13 @@ async def finalize_video(video_id: str) -> bool:
         video.completed_at = completed_at
         await db.commit()
         logger.info(f"Video {video.id} finalized successfully")
+
+        await publish_event_async(
+            video_id,
+            {
+                "type": "video.ready",
+                "video_id": video_id,
+                "status": "READY",
+            },
+        )
     return True

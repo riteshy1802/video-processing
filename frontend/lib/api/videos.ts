@@ -146,7 +146,7 @@ export const VideoAPI = {
         const res = await apiClient.get("/api/videos");
         apiVideos = res.data.map((v: any) => {
           const statusLower = (v.status || "").toLowerCase();
-          const isReady = statusLower === "ready" || statusLower === "completed";
+          const isReady = statusLower === "ready";
           const rawRenditions = v.renditions || [];
           const renditions: Rendition[] = rawRenditions.map((r: any) => ({
             resolution: typeof r.resolution === "number" ? `${r.resolution}p` : String(r.resolution).endsWith("p") ? String(r.resolution) : `${r.resolution}p`,
@@ -193,7 +193,7 @@ export const VideoAPI = {
         const res = await apiClient.get(`/api/videos/${id}`);
         const v = res.data;
         const statusLower = (v.status || "").toLowerCase();
-        const isReady = statusLower === "ready" || statusLower === "completed";
+        const isReady = statusLower === "ready";
         
         let rawRenditions = v.renditions || [];
         if (rawRenditions.length === 0 && isReady && v.source_height) {

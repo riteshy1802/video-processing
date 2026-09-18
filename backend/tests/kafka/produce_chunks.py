@@ -26,7 +26,14 @@ def produce_worker_jobs(chunk_ids: list[str]):
 
 
 if __name__ == "__main__":
-    # If explicit chunk ID arguments are passed, use them; otherwise generate sample UUIDs
-    args = sys.argv[1:]
-    target_ids = args if args else [str(uuid.uuid4()) for _ in range(10)]
+    # Handle space-separated strings passed from Makefile: make produce-worker-job IDS="id1 id2"
+    raw_args = sys.argv[1:]
+    target_ids: list[str] = []
+    for arg in raw_args:
+        target_ids.extend([item.strip() for item in arg.split() if item.strip()])
+
+    if not target_ids:
+        print("No chunk ID provided. Generating 1 sample UUID for testing...")
+        target_ids = [str(uuid.uuid4())]
+
     produce_worker_jobs(target_ids)

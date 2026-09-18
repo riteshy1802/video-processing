@@ -8,9 +8,14 @@ admin = KafkaAdminClient(
 existing_topics = set(admin.list_topics())
 
 topics = [
-    NewTopic(name="planner.jobs", num_partitions=6, replication_factor=1),
-    NewTopic(name="transcode.jobs", num_partitions=6, replication_factor=1),
-    NewTopic(name="finalize.jobs", num_partitions=3, replication_factor=1),
+    NewTopic(name=settings.KAFKA_PLANNER_TOPIC, num_partitions=6, replication_factor=1),
+    NewTopic(name=settings.KAFKA_WORKER_TOPIC, num_partitions=6, replication_factor=1),
+    NewTopic(
+        name=settings.KAFKA_FINALIZE_TOPIC, num_partitions=3, replication_factor=1
+    ),
+    NewTopic(
+        name=settings.KAFKA_FINALIZE_VIDEO_TOPIC, num_partitions=3, replication_factor=1
+    ),
 ]
 missing_topics = [topic for topic in topics if topic.name not in existing_topics]
 if missing_topics:

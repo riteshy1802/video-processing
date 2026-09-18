@@ -111,7 +111,11 @@ class VideoService:
 
         now = datetime.now(timezone.utc)
         updated_video = await video_repository.update_status(
-            db=db, video=video, status="UPLOADED", uploaded_at=now
+            db=db,
+            video=video,
+            status="UPLOADED",
+            uploaded_at=now,
+            processing_started_at=now,
         )
 
         # Audit event

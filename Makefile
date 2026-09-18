@@ -1,4 +1,4 @@
-.PHONY: help install backend planner worker finalizer frontend infra infra-down init-kafka kafka-init check-topic dashboard kafka-ui produce-planner-job produce-planner produce-worker-job produce-worker produce-finalizer-job produce-finalizer migrate test build clean
+.PHONY: help install backend planner worker finalizer video-finalizer frontend infra infra-down init-kafka kafka-init check-topic dashboard kafka-ui produce-planner-job produce-planner produce-worker-job produce-worker produce-finalizer-job produce-finalizer produce-video-finalizer-job produce-video-jobs-finalizer produce-video-finalizer migrate test build clean
 
 PORT ?= 7500
 TOPIC ?= $(or $(topic),planner.jobs)
@@ -12,7 +12,8 @@ help:
 	@echo "  make backend                    - Start FastAPI backend server on port $(PORT)"
 	@echo "  make planner                    - Start Planner consumer process"
 	@echo "  make worker                     - Start Worker consumer process"
-	@echo "  make finalizer                  - Start Finalizer consumer process"
+	@echo "  make finalizer                  - Start Rendition Finalizer consumer process"
+	@echo "  make video-finalizer            - Start Video Asset Finalizer consumer process"
 	@echo "  make frontend                   - Start Next.js frontend dev server (http://localhost:3000)"
 	@echo "  make infra                      - Start Kafka & UI Dashboard (cd backend/infrastructure/kafka && docker compose up -d)"
 	@echo "  make infra-down                 - Stop Kafka infrastructure (cd backend/infrastructure/kafka && docker compose down)"
@@ -22,6 +23,7 @@ help:
 	@echo "  make produce-planner-job [IDS=] - Publish video ID(s) to Kafka 'planner.jobs' (e.g. IDS=\"id1 id2\")"
 	@echo "  make produce-worker-job [IDS=]  - Publish chunk ID(s) to Kafka 'worker.jobs' (e.g. IDS=\"id1 id2\")"
 	@echo "  make produce-finalizer-job [IDS=]- Publish rendition ID(s) to Kafka 'finalize.jobs' (e.g. IDS=\"id1 id2\")"
+	@echo "  make produce-video-finalizer-job [IDS=]- Publish video ID(s) to Kafka 'video.finalize.jobs' (e.g. IDS=\"id1 id2\")"
 	@echo "  make migrate                    - Run Alembic database migrations on Supabase"
 	@echo "  make test                       - Run backend integration test suite"
 	@echo "  make build                      - Build production bundle for Next.js frontend"
@@ -48,8 +50,12 @@ worker:
 	cd backend && .venv/bin/python -m worker.main
 
 finalizer:
-	@echo "Starting Finalizer process..."
+	@echo "Starting Rendition Finalizer process..."
 	cd backend && .venv/bin/python -m finalizer.main
+
+video-finalizer:
+	@echo "Starting Video Asset Finalizer process..."
+	cd backend && .venv/bin/python -m video_finalizer.main
 
 frontend:
 	@echo "Starting Next.js frontend on http://localhost:3000..."
@@ -102,6 +108,14 @@ produce-finalizer-job: produce-finalizer
 produce-finalizer:
 	@echo "Publishing finalizer rendition job(s) to Kafka topic 'finalize.jobs'..."
 	cd backend && .venv/bin/python tests/kafka/produce_finalizer.py $(IDS)
+
+produce-video-finalizer-job: produce-video-finalizer
+
+produce-video-jobs-finalizer: produce-video-finalizer
+
+produce-video-finalizer:
+	@echo "Publishing video finalizer job(s) to Kafka topic 'video.finalize.jobs'..."
+	cd backend && .venv/bin/python tests/kafka/produce_video_finalizer.py $(IDS)
 
 
 migrate:

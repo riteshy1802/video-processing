@@ -6,6 +6,17 @@ from app.repositories.rendition_repository import rendition_repository
 from app.database import AsyncSessionLocal
 from app.services.s3 import s3_service
 from datetime import datetime, timezone
+from video_finalizer.all_rendition_final import check_all_renditions_complete
+from video_finalizer.producer import (
+    get_video_finalizer_producer,
+    publish_video_finalizer_job,
+)
+
+# Rendition:
+# PENDING → PROCESSING → READY / FAILED
+
+# Video:
+# PENDING_UPLOAD → UPLOADED → PROCESSING → COMPLETED / FAILED
 
 logger = logging.getLogger("finalizer")
 
@@ -205,6 +216,21 @@ async def finalize_rendition(rendition_id: str) -> bool:
             ).total_seconds()
 
         await db.commit()
+
+        video_id = str(rendition.video_id)
+        all_ready = await check_all_renditions_complete()
+        if all_ready:
+            producer = get_video_finalizer_producer()
+            if producer is None:
+                raise RuntimeError("Could not initialize video finalizer producer")
+            # But keep one thing in mind, all the workers will try (and are allowed) to publish at the same time,
+            # what we do is claim in the database by changing the status = "FINALIZING",
+            # and if a worker picks a video having a status of FINALIZING, it should immediately drop it
+            # we need to handle that in our next consumer we have which will consume on our topic : KAFKA_FINALIZE_VIDEO_TOPIC
+            publish_video_finalizer_job(
+                producer=producer,
+                video_id=video_id,
+            )
 
         # TODO: Enable after Rendition READY + DB commit is implemented.
         # chunks_prefix = f"{final_prefix}/chunks"

@@ -1,9 +1,10 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update, or_
 from sqlalchemy.orm import selectinload
+from app.config import settings
 from app.models.video import Video
 from app.models.video_event import VideoEvent
 
@@ -61,12 +62,15 @@ class VideoRepository:
         video: Video,
         status: str,
         uploaded_at: Optional[datetime] = None,
+        processing_started_at: Optional[datetime] = None,
         error_message: Optional[str] = None,
     ) -> Video:
         """Updates video status and timestamps."""
         video.status = status
         if uploaded_at:
             video.uploaded_at = uploaded_at
+        if processing_started_at:
+            video.processing_started_at = processing_started_at
         if error_message:
             video.error_message = error_message
             video.failed_at = datetime.now(timezone.utc)
@@ -79,6 +83,49 @@ class VideoRepository:
         """Deletes video and cascades linked renditions, chunks, and events."""
         await db.delete(video)
         await db.commit()
+
+    async def claim_for_finalization(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> bool:
+        """
+        Multiple workers can complete rendition jobs simultaneously.
+        Atomically claims status="FINALIZING" or reclaims stale FINALIZING jobs
+        older than VIDEO_FINALIZATION_TIMEOUT_SECONDS.
+        """
+        now = datetime.now(timezone.utc)
+
+        stale_before = now - timedelta(
+            seconds=settings.VIDEO_FINALIZATION_TIMEOUT_SECONDS
+        )
+
+        stmt = (
+            update(Video)
+            .where(
+                Video.id == video_id,
+                or_(
+                    Video.status == "PROCESSING",
+                    (
+                        (Video.status == "FINALIZING")
+                        & (Video.finalizing_started_at < stale_before)
+                    ),
+                ),
+            )
+            .values(
+                status="FINALIZING",
+                finalizing_started_at=now,
+            )
+        )
+
+        result = await db.execute(stmt)
+
+        if result.rowcount == 1:
+            await db.commit()
+            return True
+
+        await db.rollback()
+        return False
 
     async def log_event(
         self,

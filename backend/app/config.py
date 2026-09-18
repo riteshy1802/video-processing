@@ -80,6 +80,14 @@ class Settings(BaseSettings):
         default="video-finalizers",
         description="Name of the consumer group for the finalizers doing final chunk aggregations",
     )
+    KAFKA_FINALIZE_VIDEO_TOPIC: str = Field(
+        default="video.finalize.jobs",
+        description="Name of the finalizers partition doing final rendition (videos) aggregations",
+    )
+    KAFKA_FINALIZE_VIDEO_GROUP_ID: str = Field(
+        default="video-finalizers",
+        description="Name of the consumer group for the finalizers doing final rendition (videos) aggregations",
+    )
 
     SUPPORTED_RENDITIONS: List[int] = Field(
         default=[360, 480, 720, 1080, 1440],
@@ -90,6 +98,10 @@ class Settings(BaseSettings):
     )
     CHUNK_DURATION_SECONDS: int = Field(
         default=300, description="The duration width of a chunk generated"
+    )
+    VIDEO_FINALIZATION_TIMEOUT_SECONDS: int = Field(
+        default=40,
+        description="Timeout in seconds before a FINALIZING video job is considered stale and reclaimed",
     )
 
     @property

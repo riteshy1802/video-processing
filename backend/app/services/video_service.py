@@ -1,7 +1,7 @@
 import uuid
 import logging
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
@@ -18,6 +18,32 @@ from app.repositories.video_repository import video_repository
 from planner.producer import get_planner_producer, publish_planning_job
 
 logger = logging.getLogger("video_service")
+
+
+def build_master_playlist_url(video_id: uuid.UUID | str) -> Optional[str]:
+    """
+    Centralized helper to construct the master.m3u8 playback URL.
+    Uses settings.CLOUDFRONT_DOMAIN if configured (e.g. 'd123456.cloudfront.net').
+    Falls back to presigned S3 GET URL if CLOUDFRONT_DOMAIN is not set.
+    """
+    s3_key = f"videos/{video_id}/processed/master.m3u8"
+    domain = settings.CLOUDFRONT_DOMAIN
+
+    if domain and domain.strip():
+        clean_domain = domain.strip()
+        if not clean_domain.startswith("http://") and not clean_domain.startswith("https://"):
+            clean_domain = f"https://{clean_domain}"
+        clean_domain = clean_domain.rstrip("/")
+        return f"{clean_domain}/{s3_key}"
+
+    # Fallback to S3 presigned GET URL if CloudFront is not configured
+    try:
+        return s3_service.generate_presigned_get_url(
+            s3_key=s3_key,
+            expires_in=settings.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
+        )
+    except Exception:
+        return f"https://{settings.S3_BUCKET_NAME}.s3.{settings.AWS_REGION}.amazonaws.com/{s3_key}"
 
 
 class VideoService:
@@ -154,14 +180,36 @@ class VideoService:
         )
 
     async def list_videos(self, db: AsyncSession) -> List[VideoResponse]:
-        """Lists uploaded video assets."""
+        """Lists uploaded video assets with playback URLs and rendition metadata."""
         videos = await video_repository.list_videos(db)
-        return [VideoResponse.model_validate(v) for v in videos]
+        result = []
+        for v in videos:
+            is_ready = (v.status or "").upper() in ("READY", "COMPLETED")
+            master_url = build_master_playlist_url(v.id) if is_ready else None
+            renditions_list = getattr(v, "renditions", []) or []
+            res = VideoResponse(
+                id=v.id,
+                original_filename=v.original_filename,
+                content_type=v.content_type,
+                file_size_bytes=v.file_size_bytes,
+                status=v.status,
+                s3_key=v.s3_key,
+                created_at=v.created_at,
+                uploaded_at=v.uploaded_at,
+                source_width=v.source_width,
+                source_height=v.source_height,
+                duration_seconds=v.duration_seconds,
+                playback_url=master_url,
+                master_playlist_url=master_url,
+                renditions=renditions_list,
+            )
+            result.append(res)
+        return result
 
     async def get_video_detail(
         self, db: AsyncSession, video_id: uuid.UUID
     ) -> VideoDetailResponse:
-        """Returns video details with short-lived presigned GET URL for original video playback."""
+        """Returns video details with CloudFront/presigned playback URLs and renditions."""
         video = await video_repository.get_by_id(db, video_id)
         if not video:
             raise HTTPException(
@@ -176,6 +224,11 @@ class VideoService:
             response_filename=video.original_filename,
         )
 
+        is_ready = (video.status or "").upper() in ("READY", "COMPLETED")
+        master_url = build_master_playlist_url(video.id) if is_ready else None
+        playback_url = master_url if is_ready else presigned_get_url
+        renditions_list = getattr(video, "renditions", []) or []
+
         return VideoDetailResponse(
             id=video.id,
             original_filename=video.original_filename,
@@ -184,11 +237,14 @@ class VideoService:
             status=video.status,
             s3_key=video.s3_key,
             original_url=presigned_get_url,
+            playback_url=playback_url,
+            master_playlist_url=master_url,
             created_at=video.created_at,
             uploaded_at=video.uploaded_at,
             source_width=video.source_width,
             source_height=video.source_height,
             duration_seconds=video.duration_seconds,
+            renditions=renditions_list,
         )
 
     async def delete_video(self, db: AsyncSession, video_id: uuid.UUID) -> None:

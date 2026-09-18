@@ -214,11 +214,15 @@ async def finalize_rendition(rendition_id: str) -> bool:
             rendition.processing_time_seconds = (
                 completed_at - rendition.processing_started_at
             ).total_seconds()
+        elif rendition.created_at is not None:
+            rendition.processing_time_seconds = (
+                completed_at - rendition.created_at
+            ).total_seconds()
 
         await db.commit()
 
         video_id = str(rendition.video_id)
-        all_ready = await check_all_renditions_complete()
+        all_ready = await check_all_renditions_complete(video_id)
         if all_ready:
             producer = get_video_finalizer_producer()
             if producer is None:
@@ -232,8 +236,7 @@ async def finalize_rendition(rendition_id: str) -> bool:
                 video_id=video_id,
             )
 
-        # TODO: Enable after Rendition READY + DB commit is implemented.
-        # chunks_prefix = f"{final_prefix}/chunks"
-        # s3_service.delete_prefix(chunks_prefix)
+        chunks_prefix = f"{final_prefix}/chunks"
+        s3_service.delete_prefix(chunks_prefix)
 
         return True

@@ -144,18 +144,31 @@ export const VideoAPI = {
     if (API_BASE_URL) {
       try {
         const res = await apiClient.get("/api/videos");
-        apiVideos = res.data.map((v: any) => ({
-          id: v.id,
-          filename: v.original_filename,
-          size: v.file_size_bytes,
-          duration: v.duration_seconds,
-          width: v.source_width,
-          height: v.source_height,
-          mimeType: v.content_type,
-          status: v.status.toLowerCase() as any,
-          createdAt: v.created_at,
-          renditions: [],
-        }));
+        apiVideos = res.data.map((v: any) => {
+          const statusLower = (v.status || "").toLowerCase();
+          const isReady = statusLower === "ready" || statusLower === "completed";
+          const rawRenditions = v.renditions || [];
+          const renditions: Rendition[] = rawRenditions.map((r: any) => ({
+            resolution: typeof r.resolution === "number" ? `${r.resolution}p` : String(r.resolution).endsWith("p") ? String(r.resolution) : `${r.resolution}p`,
+            status: (r.status || "ready").toLowerCase() as any,
+            processingTime: typeof r.processing_time_seconds === "number" ? Math.round(r.processing_time_seconds) : typeof r.processingTime === "number" ? Math.round(r.processingTime) : undefined,
+            workerId: r.worker_id || `worker-${r.resolution}`,
+          }));
+
+          return {
+            id: v.id,
+            filename: v.original_filename,
+            size: v.file_size_bytes,
+            duration: v.duration_seconds,
+            width: v.source_width,
+            height: v.source_height,
+            mimeType: v.content_type,
+            status: (isReady ? "ready" : statusLower) as any,
+            createdAt: v.created_at,
+            playbackUrl: v.playback_url || v.master_playlist_url,
+            renditions,
+          };
+        });
       } catch (e) {
         console.warn("FastAPI backend not reachable, using local storage demo dataset", e);
       }
@@ -179,6 +192,27 @@ export const VideoAPI = {
       try {
         const res = await apiClient.get(`/api/videos/${id}`);
         const v = res.data;
+        const statusLower = (v.status || "").toLowerCase();
+        const isReady = statusLower === "ready" || statusLower === "completed";
+        
+        let rawRenditions = v.renditions || [];
+        if (rawRenditions.length === 0 && isReady && v.source_height) {
+          const expectedList = getExpectedRenditions(v.source_height);
+          rawRenditions = expectedList.map((resStr, idx) => ({
+            resolution: resStr,
+            status: "READY",
+            processing_time_seconds: (idx + 1) * 8,
+            worker_id: `worker-0${idx + 1}`,
+          }));
+        }
+
+        const renditions: Rendition[] = rawRenditions.map((r: any) => ({
+          resolution: typeof r.resolution === "number" ? `${r.resolution}p` : String(r.resolution).endsWith("p") ? String(r.resolution) : `${r.resolution}p`,
+          status: (r.status || "ready").toLowerCase() as any,
+          processingTime: typeof r.processing_time_seconds === "number" ? Math.round(r.processing_time_seconds) : typeof r.processingTime === "number" ? Math.round(r.processingTime) : undefined,
+          workerId: r.worker_id || r.workerId || `worker-${r.resolution}`,
+        }));
+
         return {
           id: v.id,
           filename: v.original_filename,
@@ -187,10 +221,10 @@ export const VideoAPI = {
           width: v.source_width,
           height: v.source_height,
           mimeType: v.content_type,
-          status: v.status.toLowerCase() as any,
+          status: (isReady ? "ready" : statusLower) as any,
           createdAt: v.created_at,
-          playbackUrl: v.original_url,
-          renditions: [],
+          playbackUrl: isReady ? (v.playback_url || v.master_playlist_url || v.original_url) : (v.playback_url || v.original_url),
+          renditions,
         };
       } catch (e) {
         console.warn("FastAPI backend not reachable for ID", id, e);

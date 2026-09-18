@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -36,6 +36,18 @@ class CompleteUploadResponse(BaseModel):
     uploaded_at: datetime
 
 
+class RenditionResponse(BaseModel):
+    id: uuid.UUID
+    resolution: int
+    status: str
+    s3_prefix: Optional[str] = None
+    playlist_s3_key: Optional[str] = None
+    processing_time_seconds: Optional[float] = None
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class VideoResponse(BaseModel):
     id: uuid.UUID
     original_filename: str
@@ -48,6 +60,9 @@ class VideoResponse(BaseModel):
     source_width: Optional[int] = None
     source_height: Optional[int] = None
     duration_seconds: Optional[float] = None
+    playback_url: Optional[str] = None
+    master_playlist_url: Optional[str] = None
+    renditions: List[RenditionResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -60,10 +75,13 @@ class VideoDetailResponse(BaseModel):
     status: str
     s3_key: str
     original_url: str
+    playback_url: Optional[str] = None
+    master_playlist_url: Optional[str] = None
     created_at: datetime
     uploaded_at: Optional[datetime] = None
     source_width: Optional[int] = None
     source_height: Optional[int] = None
     duration_seconds: Optional[float] = None
+    renditions: List[RenditionResponse] = []
 
     model_config = ConfigDict(from_attributes=True)

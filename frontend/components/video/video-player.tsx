@@ -17,12 +17,17 @@ import {
 } from "lucide-react";
 import { cn, formatDuration } from "@/lib/utils";
 
+import { Rendition } from "@/types/video";
+
 interface VideoPlayerProps {
   src?: string;
   poster?: string;
   className?: string;
   autoPlay?: boolean;
+  selectedQuality?: string;
+  onQualityChange?: (quality: string) => void;
   onMetadataLoaded?: (metadata: { duration: number; width: number; height: number }) => void;
+  renditions?: Rendition[];
 }
 
 export function VideoPlayer({
@@ -30,7 +35,10 @@ export function VideoPlayer({
   poster,
   className,
   autoPlay = false,
+  selectedQuality: externalQuality,
+  onQualityChange,
   onMetadataLoaded,
+  renditions,
 }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -39,14 +47,49 @@ export function VideoPlayer({
   const hlsPreviewRef = useRef<Hls | null>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [levels, setLevels] = useState<{ id: number; height: number; bitrate: number }[]>([]);
-  const [selectedQuality, setSelectedQuality] = useState<string>("auto");
+  const [internalQuality, setInternalQuality] = useState<string>("auto");
   const [showQualityMenu, setShowQualityMenu] = useState(false);
+  const qualityMenuRef = useRef<HTMLDivElement | null>(null);
+  const wasPlayingRef = useRef<boolean>(false);
+  const retryTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const currentQuality = externalQuality !== undefined ? externalQuality : internalQuality;
+
+  // Click outside or Escape key to close quality dropdown menu
+  useEffect(() => {
+    const handleClickOutside = (event: Event) => {
+      if (
+        qualityMenuRef.current &&
+        !qualityMenuRef.current.contains(event.target as Node)
+      ) {
+        setShowQualityMenu(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowQualityMenu(false);
+      }
+    };
+
+    if (showQualityMenu) {
+      document.addEventListener("pointerdown", handleClickOutside, true);
+      document.addEventListener("click", handleClickOutside, true);
+      document.addEventListener("keydown", handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener("pointerdown", handleClickOutside, true);
+      document.removeEventListener("click", handleClickOutside, true);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showQualityMenu]);
 
   // Hover frame preview state & non-blocking seek queue
   const [hoverTime, setHoverTime] = useState<number | null>(null);
@@ -55,6 +98,7 @@ export function VideoPlayer({
   const scrubberRef = useRef<HTMLDivElement | null>(null);
   const isSeekingRef = useRef<boolean>(false);
   const pendingSeekTimeRef = useRef<number | null>(null);
+  const animFrameRef = useRef<number | null>(null);
 
   const QUALITY_OPTIONS = [
     { label: "Auto Quality", value: "auto" },
@@ -65,15 +109,106 @@ export function VideoPlayer({
     { label: "360p (Low)", value: "360" },
   ];
 
-  // Initialize HLS for main player
+  const bufferingTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const clearBuffering = () => {
+    if (bufferingTimerRef.current) {
+      clearTimeout(bufferingTimerRef.current);
+      bufferingTimerRef.current = null;
+    }
+    setIsBuffering(false);
+  };
+
+  const currentQualityRef = useRef(currentQuality);
+  useEffect(() => {
+    currentQualityRef.current = currentQuality;
+  }, [currentQuality]);
+
+  const applyQualityLock = (hls: Hls | null, qualityStr: string, levelsArr?: any[]) => {
+    if (!hls) {
+      console.log("[HLS main] Quality selection ignored: player has not initialized yet.");
+      return;
+    }
+    const cleanVal = qualityStr.replace("p", "");
+
+    if (cleanVal === "auto") {
+      console.log("🎬 [HLS Player] Quality selection -> Auto Quality (ABR Mode Enabled)");
+      hls.autoLevelCapping = -1;
+      hls.currentLevel = -1;
+      return;
+    }
+
+    const targetHeight = parseInt(cleanVal, 10);
+    const searchLevels = (levelsArr && levelsArr.length > 0)
+      ? levelsArr
+      : (hls.levels && hls.levels.length > 0)
+        ? hls.levels
+        : [];
+
+    if (searchLevels.length === 0) {
+      console.log("[HLS main] Quality selection deferred: master playlist levels are not ready yet.");
+      return;
+    }
+
+    let matchedIndex = searchLevels.findIndex(
+      (lvl: any) => Math.abs((lvl.height || 0) - targetHeight) < 50
+    );
+
+    // Fallback: Match by playlist URL pattern (e.g. "360p/index.m3u8")
+    if (matchedIndex === -1) {
+      matchedIndex = searchLevels.findIndex((lvl: any) =>
+        lvl.url?.some((u: string) => u.includes(`${cleanVal}p`))
+      );
+    }
+
+    if (matchedIndex !== -1) {
+      const selectedLvl = searchLevels[matchedIndex];
+      console.log(
+        `🔒 [HLS Player] Quality Hard-Locked -> Target: ${cleanVal}p | Level Index: ${matchedIndex} | Height: ${selectedLvl?.height || targetHeight}p | Bitrate: ${selectedLvl?.bitrate ? Math.round(selectedLvl.bitrate / 1000) + ' kbps' : 'N/A'}`
+      );
+
+      // `currentLevel` is hls.js's manual-level API. It disables ABR for this
+      // player and immediately replaces buffered content with this rendition.
+      // Do not also set nextLevel/loadLevel or restart loading: those APIs
+      // compete with the immediate switch and can allow ABR's old level to win.
+      hls.autoLevelCapping = -1;
+      hls.currentLevel = matchedIndex;
+      console.log(
+        `[HLS main] Manual quality locked to ${hls.manualLevel} (${selectedLvl?.height ?? targetHeight}p)`
+      );
+    } else {
+      console.warn(`⚠️ [HLS Player] Could not match target resolution ${cleanVal}p in available levels:`, searchLevels);
+    }
+  };
+
+  // Initialize HLS for main player with resilient network retry
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
 
     setError(null);
 
+    const handleWaiting = () => {
+      if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
+      bufferingTimerRef.current = setTimeout(() => {
+        setIsBuffering(true);
+      }, 300);
+    };
+
+    const handlePlaying = () => {
+      clearBuffering();
+      setIsPlaying(true);
+    };
+
+    const handleCanPlay = () => {
+      clearBuffering();
+    };
+
+    const handlePause = () => setIsPlaying(false);
+
     const updateTime = () => {
       setCurrentTime(video.currentTime);
+      clearBuffering();
       const dur = video.duration || 0;
       setDuration(dur);
       if (onMetadataLoaded && (dur > 0 || video.videoWidth > 0)) {
@@ -87,35 +222,131 @@ export function VideoPlayer({
 
     video.addEventListener("timeupdate", updateTime);
     video.addEventListener("loadedmetadata", updateTime);
+    video.addEventListener("waiting", handleWaiting);
+    video.addEventListener("playing", handlePlaying);
+    video.addEventListener("canplay", handleCanPlay);
+    video.addEventListener("pause", handlePause);
 
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
     };
     document.addEventListener("fullscreenchange", handleFullscreenChange);
 
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    // Network Online / Offline handlers
+    const startRetryPolling = () => {
+      if (retryTimerRef.current) clearInterval(retryTimerRef.current);
+      retryTimerRef.current = setInterval(() => {
+        if (hlsRef.current) {
+          hlsRef.current.startLoad();
+        }
+      }, 3000);
+    };
+
+    const stopRetryPolling = () => {
+      if (retryTimerRef.current) {
+        clearInterval(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+
+    const handleOffline = () => {
+      if (video) wasPlayingRef.current = !video.paused;
+      setIsBuffering(true);
+      startRetryPolling();
+    };
+
+    const handleOnline = () => {
+      setIsBuffering(true);
+      if (hlsRef.current) {
+        hlsRef.current.startLoad();
+      }
+      startRetryPolling();
+    };
+
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
+
+    // Prefer hls.js when available. Native HLS owns adaptive-bitrate decisions
+    // and exposes no API for this quality selector to lock a rendition.
+    if (!Hls.isSupported() && video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = src;
       if (autoPlay) video.play().catch(() => setIsPlaying(false));
     } else if (Hls.isSupported()) {
-      const hls = new Hls({ enableWorker: true });
+      const hls = new Hls({
+        enableWorker: true,
+        maxBufferLength: 10,
+        maxMaxBufferLength: 20,
+        manifestLoadingMaxRetry: Infinity,
+        fragLoadingMaxRetry: Infinity,
+        levelLoadingMaxRetry: Infinity,
+        fragLoadingRetryDelay: 1000,
+      });
       hlsRef.current = hls;
       hls.loadSource(src);
       hls.attachMedia(video);
 
+      const syncLevels = () => {
+        if (!hls) return;
+        const available = hls.levels || [];
+        if (available.length > 0) {
+          const parsed = available.map((lvl, idx) => ({
+            id: idx,
+            height: lvl.height,
+            bitrate: lvl.bitrate,
+          }));
+          setLevels(parsed);
+        }
+      };
+
       hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
-        const parsedLevels = data.levels.map((lvl, idx) => ({
-          id: idx,
-          height: lvl.height,
-          bitrate: lvl.bitrate,
-        }));
-        setLevels(parsedLevels);
+        const raw = (data.levels && data.levels.length > 0) ? data.levels : (hls.levels || []);
+        if (raw.length > 0) {
+          const parsed = raw.map((lvl, idx) => ({
+            id: idx,
+            height: lvl.height,
+            bitrate: lvl.bitrate,
+          }));
+          setLevels(parsed);
+
+          // Lock quality immediately when manifest is parsed
+          applyQualityLock(hls, currentQualityRef.current, raw);
+        }
         if (autoPlay) video.play().catch(() => setIsPlaying(false));
+      });
+
+      hls.on(Hls.Events.LEVEL_LOADED, () => {
+        syncLevels();
+      });
+
+      hls.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
+        const activeLevel = hls.levels[data.level];
+        if (activeLevel) {
+          console.log(
+            `✨ [HLS Player] Stream Level Switched -> Level Index: ${data.level} (${activeLevel.height}p @ ${Math.round(activeLevel.bitrate / 1000)} kbps)`
+          );
+        }
+      });
+
+      hls.on(Hls.Events.FRAG_LOADING, (_event, data) => {
+        const level = hls.levels[data.frag.level];
+        console.log(
+          `[HLS main] Fetching ${level?.height ?? "unknown"}p fragment: ${data.frag.url}`
+        );
+      });
+
+      hls.on(Hls.Events.FRAG_LOADED, () => {
+        stopRetryPolling();
+        if (wasPlayingRef.current && video.paused) {
+          video.play().catch(() => {});
+        }
       });
 
       hls.on(Hls.Events.ERROR, (event, data) => {
         if (data.fatal) {
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            setIsBuffering(true);
             hls.startLoad();
+            startRetryPolling();
           } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
             hls.recoverMediaError();
           } else {
@@ -126,31 +357,52 @@ export function VideoPlayer({
       });
 
       return () => {
+        if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
+        stopRetryPolling();
         hls.destroy();
         video.removeEventListener("timeupdate", updateTime);
         video.removeEventListener("loadedmetadata", updateTime);
+        video.removeEventListener("waiting", handleWaiting);
+        video.removeEventListener("playing", handlePlaying);
+        video.removeEventListener("canplay", handleCanPlay);
+        video.removeEventListener("pause", handlePause);
+        window.removeEventListener("offline", handleOffline);
+        window.removeEventListener("online", handleOnline);
         document.removeEventListener("fullscreenchange", handleFullscreenChange);
       };
     }
 
     return () => {
+      if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
+      stopRetryPolling();
       video.removeEventListener("timeupdate", updateTime);
       video.removeEventListener("loadedmetadata", updateTime);
+      video.removeEventListener("waiting", handleWaiting);
+      video.removeEventListener("playing", handlePlaying);
+      video.removeEventListener("canplay", handleCanPlay);
+      video.removeEventListener("pause", handlePause);
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
     };
   }, [src, autoPlay]);
 
-  // Initialize HLS for preview frame player (locked to 144p level-0 for instant non-blocking seeks)
+  // Handle quality changes with instant level lock & immediate segment fetch
+  useEffect(() => {
+    applyQualityLock(hlsRef.current, currentQuality, levels);
+  }, [currentQuality, levels]);
+
+  // Initialize HLS for preview frame player (locked to 144p level-0 for instant non-blocking seeks, autoStartLoad disabled)
   useEffect(() => {
     const previewVideo = previewVideoRef.current;
     if (!previewVideo || !src) return;
 
-    if (previewVideo.canPlayType("application/vnd.apple.mpegurl")) {
+    if (!Hls.isSupported() && previewVideo.canPlayType("application/vnd.apple.mpegurl")) {
       previewVideo.src = src;
     } else if (Hls.isSupported()) {
       const previewHls = new Hls({
         enableWorker: true,
-        autoStartLoad: true,
+        autoStartLoad: false, // Do not download 480p preview segments unless user hovers over scrubber
         capLevelToPlayerSize: true,
       });
       hlsPreviewRef.current = previewHls;
@@ -158,7 +410,6 @@ export function VideoPlayer({
       previewHls.attachMedia(previewVideo);
 
       previewHls.on(Hls.Events.MANIFEST_PARSED, () => {
-        // Lock preview player to lowest resolution (144p) for ultra-fast frame extraction
         previewHls.currentLevel = 0;
       });
 
@@ -216,12 +467,26 @@ export function VideoPlayer({
     setIsMuted(!isMuted);
   };
 
+  const seekDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const hoverSeekDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const video = videoRef.current;
     if (!video) return;
     const newTime = parseFloat(e.target.value);
-    video.currentTime = newTime;
+
+    // Instant 60fps UI update for scrubber bar position & timestamp text
     setCurrentTime(newTime);
+
+    // Debounce media engine seek request by 150ms to prevent flooding network requests
+    if (seekDebounceTimerRef.current) {
+      clearTimeout(seekDebounceTimerRef.current);
+    }
+    seekDebounceTimerRef.current = setTimeout(() => {
+      if (video) {
+        video.currentTime = newTime;
+      }
+    }, 150);
   };
 
   const toggleFullscreen = () => {
@@ -238,25 +503,16 @@ export function VideoPlayer({
   };
 
   const handleQualitySelect = (val: string) => {
-    setSelectedQuality(val);
+    console.log(`👆 [HLS Player] User selected quality: ${val === "auto" ? "Auto Quality" : val + "p"}`);
+    // Apply directly from the click event. This avoids waiting for the parent
+    // controlled-state update before disabling ABR on the existing HLS instance.
+    applyQualityLock(hlsRef.current, val);
+    setInternalQuality(val);
+    if (onQualityChange) onQualityChange(val);
     setShowQualityMenu(false);
-
-    if (!hlsRef.current) return;
-
-    if (val === "auto") {
-      hlsRef.current.currentLevel = -1;
-    } else {
-      const targetHeight = parseInt(val, 10);
-      const matchedIndex = levels.findIndex(
-        (lvl) => Math.abs(lvl.height - targetHeight) < 50
-      );
-      if (matchedIndex !== -1) {
-        hlsRef.current.currentLevel = matchedIndex;
-      } else {
-        hlsRef.current.currentLevel = -1;
-      }
-    }
   };
+
+
 
   // Scrubber Hover Handler with 60fps Timestamp updates & Non-blocking Video Seek Queue
   const handleScrubberMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -268,30 +524,46 @@ export function VideoPlayer({
     const percent = offsetX / rect.width;
     const calcTime = percent * duration;
 
-    setHoverPos(offsetX);
-    setHoverTime(calcTime);
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    animFrameRef.current = requestAnimationFrame(() => {
+      setHoverPos(offsetX);
+      setHoverTime(calcTime);
+    });
 
     // Only attempt live frame preview seeking for HLS (.m3u8) playlists.
-    // For raw MP4 files from S3, seeking on hover floods network Range requests and causes severe lag.
     const isHls = src?.includes(".m3u8");
     if (!isHls) return;
 
-    const pVideo = previewVideoRef.current;
-    if (!pVideo || !isFinite(calcTime)) return;
-
-    if (!isSeekingRef.current) {
-      if (Math.abs(pVideo.currentTime - calcTime) > 0.1) {
-        isSeekingRef.current = true;
-        setIsPreviewSeeking(true);
-        pVideo.currentTime = calcTime;
-      }
-    } else {
-      pendingSeekTimeRef.current = calcTime;
+    // Debounce hover preview seeks by 100ms so rapid mouse movement does not spam requests
+    if (hoverSeekDebounceTimerRef.current) {
+      clearTimeout(hoverSeekDebounceTimerRef.current);
     }
+    hoverSeekDebounceTimerRef.current = setTimeout(() => {
+      if (hlsPreviewRef.current) {
+        hlsPreviewRef.current.startLoad();
+      }
+
+      const pVideo = previewVideoRef.current;
+      if (!pVideo || !isFinite(calcTime)) return;
+
+      if (!isSeekingRef.current) {
+        if (Math.abs(pVideo.currentTime - calcTime) > 0.1) {
+          isSeekingRef.current = true;
+          setIsPreviewSeeking(true);
+          pVideo.currentTime = calcTime;
+        }
+      } else {
+        pendingSeekTimeRef.current = calcTime;
+      }
+    }, 100);
   };
 
 
   const handleScrubberMouseLeave = () => {
+    if (hoverSeekDebounceTimerRef.current) {
+      clearTimeout(hoverSeekDebounceTimerRef.current);
+      hoverSeekDebounceTimerRef.current = null;
+    }
     setHoverTime(null);
     setIsPreviewSeeking(false);
     isSeekingRef.current = false;
@@ -309,6 +581,42 @@ export function VideoPlayer({
 
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
 
+  // Construct quality options from hls.js levels or video renditions prop
+  const computedQualityOptions = (() => {
+    let list: { label: string; value: string; height: number }[] = [];
+
+    if (levels.length > 0) {
+      list = levels
+        .filter((l) => l.height > 0)
+        .map((l) => ({
+          label: `${l.height}p`,
+          value: String(l.height),
+          height: l.height,
+        }));
+    } else if (renditions && renditions.length > 0) {
+      list = renditions
+        .map((r) => {
+          const h = parseInt(r.resolution.replace("p", ""), 10);
+          return isNaN(h) ? null : { label: `${h}p`, value: String(h), height: h };
+        })
+        .filter((item): item is { label: string; value: string; height: number } => item !== null);
+    }
+
+    const uniqueMap = new Map<number, { label: string; value: string; height: number }>();
+    list.forEach((item) => {
+      if (!uniqueMap.has(item.height)) {
+        uniqueMap.set(item.height, item);
+      }
+    });
+
+    const sortedList = Array.from(uniqueMap.values()).sort((a, b) => b.height - a.height);
+
+    return [
+      { label: "Auto Quality", value: "auto" },
+      ...sortedList.map((item) => ({ label: item.label, value: item.value })),
+    ];
+  })();
+
   return (
     <div
       ref={containerRef}
@@ -321,12 +629,43 @@ export function VideoPlayer({
       <video
         ref={videoRef}
         poster={poster}
+        preload="auto"
         onClick={togglePlay}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         className="w-full h-full object-contain cursor-pointer"
         playsInline
       />
+
+      {/* Center Big Play / Pause Action Button Overlay */}
+      <button
+        onClick={togglePlay}
+        className={cn(
+          "absolute z-20 w-16 h-16 md:w-20 md:h-20 rounded-full bg-slate-900/80 border border-slate-700/80 backdrop-blur-md flex items-center justify-center text-white shadow-2xl transition-all duration-200 hover:scale-110 hover:bg-sky-600/90 hover:border-sky-400 cursor-pointer pointer-events-auto",
+          !isPlaying
+            ? "opacity-100 scale-100"
+            : "opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100"
+        )}
+        aria-label={isPlaying ? "Pause Video" : "Play Video"}
+      >
+        {isPlaying ? (
+          <Pause className="h-8 w-8 md:h-10 md:w-10 fill-current text-white" />
+        ) : (
+          <Play className="h-8 w-8 md:h-10 md:w-10 fill-current text-white ml-1" />
+        )}
+      </button>
+
+      {/* Centered Buffering Spinner Overlay */}
+      {isBuffering && !error && (
+        <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-[2px] flex flex-col items-center justify-center z-25 pointer-events-none transition-opacity duration-150">
+          <div className="p-3 rounded-full bg-slate-900/80 border border-slate-700/80 shadow-2xl text-sky-400">
+            <Loader2 className="h-8 w-8 md:h-10 md:w-10 animate-spin" />
+          </div>
+          <span className="mt-2 text-xs font-mono text-sky-300 font-medium tracking-wide bg-slate-900/80 px-3 py-1 rounded-full border border-slate-800">
+            Buffering HLS stream...
+          </span>
+        </div>
+      )}
 
       {/* Error Overlay */}
       {error && (
@@ -446,13 +785,13 @@ export function VideoPlayer({
 
           <div className="flex items-center gap-2 relative">
             {/* Quality Menu Popover */}
-            <div className="relative">
+            <div ref={qualityMenuRef} className="relative">
               <button
                 onClick={() => setShowQualityMenu(!showQualityMenu)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900/80 border border-slate-700/60 hover:bg-slate-800 text-slate-200 font-mono text-xs transition-colors cursor-pointer"
               >
                 <Settings className="h-3.5 w-3.5 text-sky-400" />
-                <span className="capitalize">{selectedQuality === "auto" ? "Auto Quality" : `${selectedQuality}p`}</span>
+                <span className="capitalize">{currentQuality === "auto" ? "Auto Quality" : `${currentQuality}p`}</span>
               </button>
 
               {showQualityMenu && (
@@ -460,17 +799,17 @@ export function VideoPlayer({
                   <div className="px-2 py-1 text-[10px] text-slate-400 uppercase tracking-wider border-b border-slate-800 mb-1 font-semibold">
                     Streaming Quality
                   </div>
-                  {QUALITY_OPTIONS.map((opt) => (
+                  {computedQualityOptions.map((opt) => (
                     <button
                       key={opt.value}
                       onClick={() => handleQualitySelect(opt.value)}
                       className={cn(
                         "w-full text-left px-2.5 py-1.5 rounded-lg flex items-center justify-between hover:bg-slate-800 transition-colors cursor-pointer",
-                        selectedQuality === opt.value && "text-sky-400 bg-sky-500/10 font-semibold"
+                        (currentQuality.replace("p", "") === opt.value.replace("p", "") || (currentQuality === "auto" && opt.value === "auto")) && "text-sky-400 bg-sky-500/10 font-semibold"
                       )}
                     >
                       <span>{opt.label}</span>
-                      {selectedQuality === opt.value && <Check className="h-3.5 w-3.5" />}
+                      {(currentQuality.replace("p", "") === opt.value.replace("p", "") || (currentQuality === "auto" && opt.value === "auto")) && <Check className="h-3.5 w-3.5" />}
                     </button>
                   ))}
                 </div>

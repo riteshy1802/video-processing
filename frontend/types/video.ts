@@ -19,7 +19,7 @@ export type RenditionStatus =
   | "ready"
   | "failed";
 
-export type ResolutionType = "360p" | "480p" | "720p" | "1080p" | "1440p";
+export type ResolutionType = "360p" | "480p" | "720p" | "1080p" | "1440p" | "2160p" | string;
 
 export interface Rendition {
   resolution: ResolutionType;

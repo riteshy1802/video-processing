@@ -51,7 +51,11 @@ class VideoRepository:
     ) -> List[Video]:
         """Returns list of uploaded videos sorted by created_at descending."""
         stmt = (
-            select(Video).order_by(Video.created_at.desc()).limit(limit).offset(offset)
+            select(Video)
+            .options(selectinload(Video.renditions))
+            .order_by(Video.created_at.desc())
+            .limit(limit)
+            .offset(offset)
         )
         result = await db.execute(stmt)
         return list(result.scalars().all())

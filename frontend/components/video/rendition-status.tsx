@@ -8,7 +8,10 @@ interface RenditionStatusProps {
   className?: string;
 }
 
-export function RenditionStatusList({ renditions, className }: RenditionStatusProps) {
+export function RenditionStatusList({
+  renditions,
+  className,
+}: RenditionStatusProps) {
   if (!renditions || renditions.length === 0) return null;
 
   return (
@@ -64,7 +67,7 @@ export function RenditionStatusList({ renditions, className }: RenditionStatusPr
             <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
               <span>
                 {isProcessing && "Kafka Consumer Task Active"}
-                {isReady && `Completed in ${rendition.processingTime || 8}s`}
+                {isReady && (rendition.processingTime !== undefined && rendition.processingTime !== null ? `Completed in ${rendition.processingTime}s` : "Ready for streaming")}
                 {isQueued && "Waiting in Kafka Queue"}
                 {isFailed && (rendition.error || "Transcode error")}
               </span>

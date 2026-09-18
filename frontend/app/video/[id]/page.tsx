@@ -42,6 +42,7 @@ export default function VideoDetailPage({
   const [notFound, setNotFound] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [selectedQuality, setSelectedQuality] = useState<string>("auto");
 
   const fetchVideo = useCallback(async () => {
     try {
@@ -190,7 +191,10 @@ export default function VideoDetailPage({
           <VideoPlayer
             src={video.playbackUrl}
             autoPlay={false}
+            selectedQuality={selectedQuality}
+            onQualityChange={setSelectedQuality}
             onMetadataLoaded={handleMetadataLoaded}
+            renditions={video.renditions}
           />
           
           {isReady ? (

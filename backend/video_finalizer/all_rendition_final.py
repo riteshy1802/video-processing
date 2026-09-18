@@ -114,7 +114,7 @@ async def finalize_video(video_id: str) -> bool:
         logger.info(f"Master playlist uploaded: {master_playlist_key}")
         # Mark the Job completed :
         completed_at = datetime.now(timezone.utc)
-        video.status = "COMPLETED"
+        video.status = "READY"
         video.completed_at = completed_at
         await db.commit()
         logger.info(f"Video {video.id} finalized successfully")

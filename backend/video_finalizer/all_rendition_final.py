@@ -1,5 +1,6 @@
 import uuid
 import logging
+import asyncio
 from datetime import datetime, timezone
 from app.database import AsyncSessionLocal
 from app.models.video import Video
@@ -7,6 +8,7 @@ from app.repositories.rendition_repository import rendition_repository
 from app.repositories.video_repository import video_repository
 from app.services.s3 import s3_service
 from app.services.redis_publisher import publish_event_async
+from app.services.cancellation_service import settle_video_cancellation
 
 
 def calculate_rendition_width(
@@ -74,7 +76,10 @@ async def check_all_renditions_complete(video_id: str) -> bool:
         return all(rendition.status == "READY" for rendition in all_renditions)
 
 
-async def finalize_video(video_id: str) -> bool:
+async def finalize_video(
+    video_id: str,
+    cancel_event: asyncio.Event | None = None,
+) -> bool:
     print(f"FINALIZE VIDEO RECEIVED: {video_id}")
     try:
         video_uuid = uuid.UUID(video_id)
@@ -86,6 +91,20 @@ async def finalize_video(video_id: str) -> bool:
         if video is None:
             logger.warning(f"Video {video_id} does not exist")
             return False
+
+        if video.status in {"CANCELLING", "CANCELLED"}:
+            settlement = await settle_video_cancellation(db, video_uuid)
+            if settlement.status != "PROCESSING":
+                logger.info(
+                    "Skipping video finalization %s because cancellation is terminal/incomplete",
+                    video_id,
+                )
+                return True
+            video = await video_repository.get_by_id(db, video_id=video_uuid)
+            logger.info(
+                "Allowing video %s to finish because all chunks and renditions completed before cancellation",
+                video_id,
+            )
 
         # Fetch all renditions :
         renditions = await rendition_repository.get_by_video_id(db, video_id=video_uuid)
@@ -117,17 +136,61 @@ async def finalize_video(video_id: str) -> bool:
         # master m3u8 generation:
         master_playlist = generate_master_playlist(video=video, renditions=renditions)
         master_playlist_key = f"videos/{video.id}/processed/master.m3u8"
-        s3_service.put_text_file(
+        # boto3 is synchronous. Keep it off the asyncio loop so Redis cancel
+        # notifications and Kafka heartbeats are not starved.
+        await asyncio.to_thread(
+            s3_service.put_text_file,
             s3_key=master_playlist_key,
             content=master_playlist,
         )
         logger.info(f"Master playlist uploaded: {master_playlist_key}")
-        # Mark the Job completed :
+
+        # Re-check under the video-row lock immediately before READY. If a
+        # cancellation raced here, completed renditions are allowed to finish;
+        # incomplete cancellation is never overwritten.
+        current_status = await video_repository.get_status_for_update(db, video_uuid)
+        if current_status in {"CANCELLING", "CANCELLED"}:
+            await db.rollback()
+            settlement = await settle_video_cancellation(db, video_uuid)
+            if settlement.status != "PROCESSING":
+                logger.info(
+                    "Not marking video %s READY because cancellation is incomplete/terminal",
+                    video_id,
+                )
+                return True
+            claimed = await video_repository.claim_for_finalization(db, video_uuid)
+            if not claimed:
+                logger.info(
+                    "Video %s completion-race finalization was already claimed",
+                    video_id,
+                )
+                return True
+        elif current_status == "PROCESSING":
+            await db.rollback()
+            claimed = await video_repository.claim_for_finalization(db, video_uuid)
+            if not claimed:
+                return True
+        elif current_status != "FINALIZING":
+            await db.rollback()
+            logger.info(
+                "Not marking video %s READY from status %s",
+                video_id,
+                current_status,
+            )
+            return True
+
         completed_at = datetime.now(timezone.utc)
-        video.status = "READY"
-        video.completed_at = completed_at
+        marked_ready = await video_repository.mark_ready_if_finalizing(
+            db,
+            video_uuid,
+            completed_at,
+        )
+        if not marked_ready:
+            await db.rollback()
+            logger.info("Video %s lost its READY transition to cancellation", video_id)
+            return True
         await db.commit()
-        logger.info(f"Video {video.id} finalized successfully")
+        logger.info(f"Video {video_id} finalized successfully")
 
         await publish_event_async(
             video_id,

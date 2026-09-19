@@ -1,6 +1,6 @@
 import React from "react";
 import { RenditionStatus } from "@/types/video";
-import { Cpu, Clock, CheckCircle2, AlertCircle } from "lucide-react";
+import { Cpu, Clock, CheckCircle2, AlertCircle, Ban, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface WorkerNodeBadgeProps {
@@ -53,6 +53,24 @@ export function WorkerNodeBadge({ status, workerId, workerDisplay, className }: 
       <div className={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono font-medium bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30", className)}>
         <AlertCircle className="h-3 w-3 shrink-0" />
         <span>Failed</span>
+      </div>
+    );
+  }
+
+  if (statusLower === "cancelled") {
+    return (
+      <div className={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono font-medium bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30", className)}>
+        <XCircle className="h-3 w-3 shrink-0" />
+        <span>Cancelled</span>
+      </div>
+    );
+  }
+
+  if (statusLower === "cancelling") {
+    return (
+      <div className={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono font-medium bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 border border-slate-300 dark:border-slate-700", className)}>
+        <Ban className="h-3 w-3 shrink-0" />
+        <span>Stopping</span>
       </div>
     );
   }

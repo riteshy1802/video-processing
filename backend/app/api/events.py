@@ -51,7 +51,7 @@ async def build_initial_state_snapshot(db: AsyncSession, video_id: uuid.UUID) ->
                 100.0
                 if c_status in ("DONE", "READY")
                 else 0.0
-                if c_status == "PENDING"
+                if c_status in ("PENDING", "CANCELLED")
                 else min(99.0, max(0.0, c.progress_percent or 0.0))
             )
             if c_status in ("DONE", "READY"):
@@ -67,7 +67,6 @@ async def build_initial_state_snapshot(db: AsyncSession, video_id: uuid.UUID) ->
                 "status": c_status,
                 "progress": round(c_prog, 1),
                 "worker_id": c.worker_id,
-                "ffmpeg": c.ffmpeg_progress,
                 "error": c.error_message,
                 "start_seconds": c.start_seconds,
                 "end_seconds": c.end_seconds,
@@ -181,7 +180,7 @@ async def stream_video_events(
 
             # If video is already terminal, the snapshot is all the client needs.
             v_status = snapshot.get("status", "").upper()
-            if v_status in ("READY", "FAILED"):
+            if v_status in ("READY", "FAILED", "CANCELLED"):
                 return
 
             idle_seconds = 0
@@ -201,7 +200,11 @@ async def stream_video_events(
                         # If message indicates video finished, close stream cleanly
                         try:
                             evt = json.loads(data_str)
-                            if evt.get("type") in ("video.ready", "video.failed"):
+                            if evt.get("type") in (
+                                "video.ready",
+                                "video.failed",
+                                "video.cancelled",
+                            ):
                                 await asyncio.sleep(1.0)
                                 break
                         except Exception:

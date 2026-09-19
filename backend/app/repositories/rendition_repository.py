@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.models.rendition import Rendition
+from app.models.video import Video
 
 
 class RenditionRepository:
@@ -41,6 +42,14 @@ class RenditionRepository:
         result = await db.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_video_id(
+        self,
+        db: AsyncSession,
+        rendition_id: uuid.UUID,
+    ) -> uuid.UUID | None:
+        stmt = select(Rendition.video_id).where(Rendition.id == rendition_id)
+        return (await db.execute(stmt)).scalar_one_or_none()
+
     async def create_renditions(
         self, db: AsyncSession, renditions: List[Rendition]
     ) -> List[Rendition]:
@@ -57,7 +66,6 @@ class RenditionRepository:
         rendition: Rendition,
         status: str,
         error_message: Optional[str] = None,
-        master_playlist_url: Optional[str] = None,
     ) -> Rendition:
         """Updates rendition status and outputs."""
         now = datetime.now(timezone.utc)
@@ -85,6 +93,132 @@ class RenditionRepository:
         )
         result = await db.execute(stmt)
         return result.scalar_one_or_none() is None
+
+    async def mark_unfinished_as_cancelling(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> int:
+        """
+            Mark unfinished renditions as CANCELLING.
+
+            READY renditions remain READY.
+            FAILED/CANCELLED terminal renditions remain unchanged.
+
+            Return the number of affected renditions.
+        """
+        stmt = (
+            update(Rendition)
+            .where(
+                Rendition.video_id == video_id,
+                Rendition.status.in_(["PENDING", "PROCESSING"]),
+            )
+            .values(
+                status="CANCELLING",
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+
+        result = await db.execute(stmt)
+
+        # Do not commit here.
+        # video_service owns the cancellation transaction.
+        return result.rowcount
+
+    async def mark_cancelling_as_cancelled(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> int:
+        """
+            Transition CANCELLING renditions to CANCELLED after
+            all active chunk processing for the video has stopped.
+
+            READY / FAILED / already CANCELLED renditions remain unchanged.
+
+            Returns the number of affected renditions.
+        """
+
+        stmt = (
+            update(Rendition)
+            .where(
+                Rendition.video_id == video_id,
+                Rendition.status == "CANCELLING",
+            )
+            .values(
+                status="CANCELLED",
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+
+        result = await db.execute(stmt)
+
+        # Do not commit here.
+        # The service owns the transaction.
+        return result.rowcount
+
+    async def mark_ready_if_processing(
+        self,
+        db: AsyncSession,
+        rendition_id: uuid.UUID,
+        playlist_s3_key: str,
+        completed_at: datetime,
+        processing_time_seconds: float | None,
+    ) -> bool:
+        """Prevent a concurrent cancellation from becoming READY."""
+        stmt = (
+            update(Rendition)
+            .where(
+                Rendition.id == rendition_id,
+                Rendition.status == "PROCESSING",
+                Rendition.video_id.in_(
+                    select(Video.id).where(Video.status == "PROCESSING")
+                ),
+            )
+            .values(
+                status="READY",
+                playlist_s3_key=playlist_s3_key,
+                completed_at=completed_at,
+                processing_time_seconds=processing_time_seconds,
+                updated_at=completed_at,
+            )
+        )
+        result = await db.execute(stmt)
+        return result.rowcount == 1
+
+    async def get_cancelled_ids_for_video(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> list[uuid.UUID]:
+        stmt = select(Rendition.id).where(
+            Rendition.video_id == video_id,
+            Rendition.status == "CANCELLED",
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def resume_cancelled(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> int:
+        """Resume unfinished renditions while preserving READY renditions."""
+        stmt = (
+            update(Rendition)
+            .where(
+                Rendition.video_id == video_id,
+                Rendition.status == "CANCELLED",
+            )
+            .values(
+                status="PROCESSING",
+                completed_at=None,
+                processing_time_seconds=None,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        result = await db.execute(stmt)
+        return result.rowcount
 
 
 rendition_repository = RenditionRepository()

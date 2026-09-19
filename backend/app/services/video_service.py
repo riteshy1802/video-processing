@@ -1,6 +1,7 @@
 import uuid
 import logging
 import os
+import asyncio
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import HTTPException, status
@@ -22,7 +23,20 @@ from app.services.thumbnail_service import (
     schedule_automatic_thumbnail,
 )
 from app.repositories.video_repository import video_repository
+from app.repositories.chunk_repository import chunk_repository
+from app.repositories.rendition_repository import rendition_repository
 from planner.producer import get_planner_producer, publish_planning_job
+from worker.producer import get_worker_producer, publish_chunk
+from worker.producer import publish_finalize_jobs_for_each_rendition
+from video_finalizer.producer import (
+    get_video_finalizer_producer,
+    publish_video_finalizer_job,
+)
+from app.services.redis_publisher import (
+    publish_event_async,
+    publish_video_cancel,
+)
+from app.services.cancellation_service import settle_video_cancellation
 
 logger = logging.getLogger("video_service")
 
@@ -166,8 +180,12 @@ class VideoService:
         try:
             producer = get_planner_producer()
             if producer:
-                publish_planning_job(producer=producer, video_id=str(updated_video.id))
-                producer.flush()
+                await asyncio.to_thread(
+                    publish_planning_job,
+                    producer=producer,
+                    video_id=str(updated_video.id),
+                )
+                await asyncio.to_thread(producer.flush)
                 await video_repository.log_event(
                     db=db,
                     video_id=updated_video.id,
@@ -330,6 +348,238 @@ class VideoService:
 
         # Delete DB records (cascades renditions, chunks, events)
         await video_repository.delete_video(db, video)
+
+    async def cancel_video_processing(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> str:
+        current_status = await video_repository.get_status_for_update(db, video_id)
+        if current_status is None:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Video asset with ID '{video_id}' not found.",
+            )
+
+        if current_status == "CANCELLED":
+            await db.rollback()
+            return current_status
+
+        if current_status == "CANCELLING":
+            await db.rollback()
+            return (await settle_video_cancellation(db, video_id)).status
+
+        if current_status not in {"UPLOADED", "PROCESSING", "FINALIZING"}:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Video processing cannot be cancelled from status {current_status}.",
+            )
+
+        await video_repository.mark_cancelling(db, video_id)
+        await chunk_repository.cancel_pending_chunks(db, video_id)
+        await rendition_repository.mark_unfinished_as_cancelling(db, video_id)
+
+        await db.commit()
+
+        # Broadcast immediately after the durable intent is committed. This
+        # also interrupts an active planner/FFprobe when no chunks exist yet.
+        await publish_event_async(
+            video_id,
+            {
+                "type": "video.cancelling",
+                "video_id": str(video_id),
+                "status": "CANCELLING",
+                "message": "Stopping video processing...",
+            },
+        )
+        published = await publish_video_cancel(video_id)
+        if not published:
+            logger.warning(
+                "Failed to publish cancellation signal for video=%s; "
+                "durable PostgreSQL guards remain active.",
+                video_id,
+            )
+
+        settlement = await settle_video_cancellation(db, video_id)
+        if settlement.status != "CANCELLING":
+            return settlement.status
+        return "CANCELLING"
+
+    async def resume_video_processing(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> dict:
+        current_status = await video_repository.get_status_for_update(db, video_id)
+        if current_status is None:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Video asset with ID '{video_id}' not found.",
+            )
+
+        # A duplicate request after a graph-based resume is already active.
+        if current_status == "PROCESSING":
+            await db.rollback()
+            return {"status": "PROCESSING", "resumed": False, "chunk_ids": []}
+
+        # A duplicate pre-planning resume has already performed the only
+        # allowed CANCELLED -> UPLOADED transition. Do not enqueue it twice.
+        if current_status == "UPLOADED":
+            await db.rollback()
+            return {"status": "UPLOADED", "resumed": False, "chunk_ids": []}
+
+        if current_status != "CANCELLED":
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Video processing cannot be resumed from status {current_status}.",
+            )
+
+        renditions = await rendition_repository.get_by_video_id(db, video_id)
+        planner_required = not renditions
+        chunk_ids: list[uuid.UUID] = []
+        rendition_finalize_ids: list[uuid.UUID] = []
+        video_finalize_required = False
+        resumed = True
+
+        if planner_required:
+            resumed = await video_repository.resume_cancelled_for_planning(
+                db, video_id
+            )
+            await db.commit()
+        else:
+            unfinished_ids = [
+                rendition.id for rendition in renditions if rendition.status != "READY"
+            ]
+
+            # Preserve DONE chunks. Only CANCELLED chunks are reset, while any
+            # already-PENDING resumable chunks join the same transcode frontier.
+            await chunk_repository.resume_cancelled_chunks(db, unfinished_ids)
+            invalid_rendition_ids: list[uuid.UUID] = []
+            for rendition_id in unfinished_ids:
+                pending_ids = await chunk_repository.get_pending_ids_for_renditions(
+                    db, [rendition_id]
+                )
+                if pending_ids:
+                    chunk_ids.extend(pending_ids)
+                elif await chunk_repository.are_all_chunks_completed(db, rendition_id):
+                    rendition_finalize_ids.append(rendition_id)
+                else:
+                    invalid_rendition_ids.append(rendition_id)
+
+            if invalid_rendition_ids:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Cancelled video contains non-resumable incomplete rendition "
+                        f"state for: {', '.join(str(item) for item in invalid_rendition_ids)}"
+                    ),
+                )
+
+            await rendition_repository.resume_cancelled(db, video_id)
+            resumed = await video_repository.resume_cancelled(db, video_id)
+            video_finalize_required = not unfinished_ids
+            await db.commit()
+
+        resume_stage = (
+            "PLANNER"
+            if planner_required
+            else "VIDEO_FINALIZER"
+            if video_finalize_required
+            else "MIXED"
+            if chunk_ids and rendition_finalize_ids
+            else "TRANSCODE"
+            if chunk_ids
+            else "RENDITION_FINALIZER"
+        )
+
+        if not resumed:
+            return {
+                "status": "UPLOADED" if planner_required else "PROCESSING",
+                "resumed": False,
+                "chunk_ids": [],
+            }
+
+        try:
+            if planner_required:
+                planner_producer = get_planner_producer()
+                if planner_producer is None:
+                    raise RuntimeError("Kafka planner producer is unavailable")
+                await asyncio.to_thread(
+                    publish_planning_job,
+                    producer=planner_producer,
+                    video_id=str(video_id),
+                )
+                await asyncio.to_thread(planner_producer.flush)
+
+            elif chunk_ids:
+                producer = get_worker_producer()
+                if producer is None:
+                    raise RuntimeError("Kafka worker producer is unavailable")
+                for chunk_id in chunk_ids:
+                    await asyncio.to_thread(
+                        publish_chunk,
+                        producer=producer,
+                        chunk_id=str(chunk_id),
+                    )
+                await asyncio.to_thread(producer.flush)
+
+            if not planner_required:
+                for rendition_id in rendition_finalize_ids:
+                    await asyncio.to_thread(
+                        publish_finalize_jobs_for_each_rendition,
+                        str(rendition_id),
+                    )
+
+            if video_finalize_required:
+                video_producer = get_video_finalizer_producer()
+                if video_producer is None:
+                    raise RuntimeError("Kafka video finalizer producer is unavailable")
+                await asyncio.to_thread(
+                    publish_video_finalizer_job,
+                    video_producer,
+                    str(video_id),
+                )
+                await asyncio.to_thread(video_producer.flush)
+        except Exception as exc:
+            # DB/Kafka atomicity is intentionally deferred until the outbox work.
+            logger.exception(
+                "Video %s resumed durably but Kafka publication failed: %s",
+                video_id,
+                exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Video was resumed, but its processing jobs could not be published.",
+            ) from exc
+
+        await publish_event_async(
+            video_id,
+            {
+                "type": "video.resumed",
+                "video_id": str(video_id),
+                "status": "UPLOADED" if planner_required else "PROCESSING",
+                "resume_stage": resume_stage,
+                "resumed_chunk_ids": [str(chunk_id) for chunk_id in chunk_ids],
+                "resumed_rendition_ids": [
+                    str(rendition_id) for rendition_id in rendition_finalize_ids
+                ],
+                "message": "Video processing resumed",
+            },
+        )
+        return {
+            "status": "UPLOADED" if planner_required else "PROCESSING",
+            "resumed": resumed,
+            "chunk_ids": [str(chunk_id) for chunk_id in chunk_ids],
+            "rendition_ids": [
+                str(rendition_id) for rendition_id in rendition_finalize_ids
+            ],
+            "resume_stage": resume_stage,
+        }
 
 
 video_service = VideoService()

@@ -46,4 +46,67 @@ async def publish_event_async(video_id: str | uuid.UUID, event_data: dict) -> bo
     Publish a real-time progress event to Redis Pub/Sub asynchronously.
     Channel: video:{video_id}:progress
     """
-    return publish_event_sync(video_id, event_data)
+    vid = str(video_id)
+    channel = f"video:{vid}:progress"
+    client = get_async_redis_client()
+    try:
+        subscribers = await client.publish(channel, json.dumps(event_data))
+        logger.info(
+            "Published event to %s (active subscribers=%s): %s",
+            channel,
+            subscribers,
+            event_data.get("type"),
+        )
+        return True
+    except Exception as e:
+        logger.warning("Failed to publish Redis event to %s: %s", channel, e)
+        return False
+    finally:
+        await client.aclose()
+
+
+async def publish_video_cancelled(video_id: str | uuid.UUID) -> bool:
+    """Publish the terminal cancellation event on the video's SSE channel."""
+    return await publish_event_async(
+        video_id,
+        {
+            "type": "video.cancelled",
+            "video_id": str(video_id),
+            "status": "CANCELLED",
+            "message": "Video processing stopped",
+        },
+    )
+
+async def publish_video_cancel(video_id: str | uuid.UUID) -> bool:
+    """
+    Broadcast a video cancellation request to all transcode workers.
+
+    Workers subscribed to the shared `video.cancel` channel will receive it.
+    Only workers currently processing this video will react.
+    """
+
+    try:
+        client = get_async_redis_client()
+
+        payload = json.dumps({
+            "video_id": str(video_id),
+        })
+
+        subscribers = await client.publish(
+            "video.cancel",
+            payload,
+        )
+
+        logger.info(
+            f"Published cancellation for video={video_id} "
+            f"(active subscribers={subscribers})"
+        )
+
+        await client.aclose()
+        return True
+
+    except Exception as e:
+        logger.warning(
+            f"Failed to publish cancellation for video={video_id}: {e}"
+        )
+        return False

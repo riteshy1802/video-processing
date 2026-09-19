@@ -27,6 +27,8 @@ import {
   Maximize2, 
   Layers, 
   Trash2, 
+  Ban,
+  RotateCcw,
   CheckCircle2,
   X,
   Info,
@@ -46,11 +48,17 @@ export default function VideoDetailPage({
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
   const [isThumbnailPreviewOpen, setIsThumbnailPreviewOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
   const [selectedQuality, setSelectedQuality] = useState<string>("auto");
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [cancelledCountdown, setCancelledCountdown] = useState<number | null>(null);
   const countdownTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const cancelRequestInFlightRef = useRef(false);
+  const resumeRequestInFlightRef = useRef(false);
 
   const fetchVideo = useCallback(async () => {
     try {
@@ -60,7 +68,7 @@ export default function VideoDetailPage({
       } else {
         setVideo(data);
       }
-    } catch (e) {
+    } catch {
       toast.error("Failed to load video details");
     } finally {
       setIsLoading(false);
@@ -68,7 +76,8 @@ export default function VideoDetailPage({
   }, [id]);
 
   useEffect(() => {
-    fetchVideo();
+    const loadTimer = window.setTimeout(() => void fetchVideo(), 0);
+    return () => window.clearTimeout(loadTimer);
   }, [fetchVideo]);
 
   const handleVideoCompleted = useCallback(() => {
@@ -87,11 +96,46 @@ export default function VideoDetailPage({
     } : current);
   }, []);
 
-  const { processingState, isConnected, isCompleted } = useVideoProcessingEvents(id, {
+  const {
+    processingState,
+    isConnected,
+    isCompleted,
+    applyCancellationStatus,
+    applyResumeStatus,
+    reconnectProcessingEvents,
+  } = useVideoProcessingEvents(id, {
     enabled: !!video && (video.status || "").toLowerCase() !== "ready",
     onVideoReady: handleVideoCompleted,
     onThumbnailReady: handleThumbnailReady,
   });
+
+  const durableVideoStatus = (processingState?.video_status || video?.status || "").toLowerCase();
+  useEffect(() => {
+    const redirectKey = `cancelled-detail-refreshed:${id}`;
+    if (!durableVideoStatus) return;
+    if (durableVideoStatus !== "cancelled") {
+      sessionStorage.removeItem(redirectKey);
+      return;
+    }
+    if (sessionStorage.getItem(redirectKey)) return;
+
+    let remaining = 10;
+    const startTimer = window.setTimeout(() => setCancelledCountdown(remaining), 0);
+    const timer = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        sessionStorage.setItem(redirectKey, "true");
+        window.clearInterval(timer);
+        window.location.reload();
+        return;
+      }
+      setCancelledCountdown(remaining);
+    }, 1000);
+    return () => {
+      window.clearTimeout(startTimer);
+      window.clearInterval(timer);
+    };
+  }, [durableVideoStatus, id]);
 
   // Handle 5 -> 4 -> 3 -> 2 -> 1 countdown tick
   useEffect(() => {
@@ -99,7 +143,6 @@ export default function VideoDetailPage({
 
     if (countdown <= 0) {
       window.location.reload();
-      setCountdown(null);
       return;
     }
 
@@ -141,9 +184,57 @@ export default function VideoDetailPage({
       await VideoAPI.deleteVideo(video.id);
       toast.success("Video asset deleted successfully from library");
       window.location.href = "/";
-    } catch (e) {
+    } catch {
       toast.error("Failed to delete video asset");
       setIsDeleting(false);
+    }
+  };
+
+  const handleConfirmCancel = async () => {
+    if (!video || cancelRequestInFlightRef.current) return;
+    try {
+      cancelRequestInFlightRef.current = true;
+      setIsCancelling(true);
+      const cancellationStatus = await VideoAPI.cancelVideo(video.id);
+      applyCancellationStatus(cancellationStatus);
+      setVideo((current) => current ? {
+        ...current,
+        status: cancellationStatus.toLowerCase() as Video["status"],
+      } : current);
+      setIsCancelModalOpen(false);
+      toast.success(
+        cancellationStatus === "PROCESSING"
+          ? "Processing completed before cancellation; finalizing video..."
+          : cancellationStatus === "CANCELLED"
+            ? "Video processing cancelled"
+            : "Cancellation requested. Stopping video processing..."
+      );
+    } catch (error) {
+      await fetchVideo();
+      toast.error(error instanceof Error ? error.message : "Failed to cancel video processing");
+    } finally {
+      cancelRequestInFlightRef.current = false;
+      setIsCancelling(false);
+    }
+  };
+
+  const handleResume = async () => {
+    if (!video || resumeRequestInFlightRef.current) return;
+    try {
+      resumeRequestInFlightRef.current = true;
+      setIsResuming(true);
+      await VideoAPI.resumeVideo(video.id);
+      sessionStorage.removeItem(`cancelled-detail-refreshed:${id}`);
+      applyResumeStatus();
+      setVideo((current) => current ? { ...current, status: "processing" } : current);
+      toast.success("Video processing resumed");
+    } catch (error) {
+      await fetchVideo();
+      reconnectProcessingEvents();
+      toast.error(error instanceof Error ? error.message : "Failed to resume video processing");
+    } finally {
+      resumeRequestInFlightRef.current = false;
+      setIsResuming(false);
     }
   };
 
@@ -186,7 +277,12 @@ export default function VideoDetailPage({
     );
   }
 
-  const isReady = (video.status || "").toLowerCase() === "ready";
+  const effectiveStatus = (processingState?.video_status || video.status || "").toLowerCase();
+  const displayVideo: Video = { ...video, status: effectiveStatus as Video["status"] };
+  const isReady = ["ready", "done", "completed"].includes(effectiveStatus);
+  const isCancelled = effectiveStatus === "cancelled";
+  const canCancel = ["uploaded", "processing", "finalizing"].includes(effectiveStatus) && !video.id.startsWith("vid_demo_");
+  const canResume = effectiveStatus === "cancelled" && !video.id.startsWith("vid_demo_");
   const resolutionLabel = getResolutionLabel(video.width, video.height);
   const renditionsSummary = video.renditions.map((r) => r.resolution).join(", ");
 
@@ -213,7 +309,7 @@ export default function VideoDetailPage({
             <h1 className="max-w-4xl truncate text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
               {video.filename}
             </h1>
-            <VideoStatusBadge status={video.status} />
+            <VideoStatusBadge status={displayVideo.status} />
           </div>
           <p className="pl-11 font-mono text-xs text-slate-500 dark:text-slate-400">
             Asset ID: <span className="font-medium text-slate-900 dark:text-slate-200">{video.id}</span> • Uploaded {formatDate(video.createdAt)}
@@ -231,22 +327,50 @@ export default function VideoDetailPage({
                 poster={video.thumbnailUrl}
                 autoPlay={false}
                 deferLoadingUntilPlay
+                initialDuration={video.duration}
                 selectedQuality={selectedQuality}
                 onQualityChange={setSelectedQuality}
                 onMetadataLoaded={handleMetadataLoaded}
                 renditions={video.renditions}
               />
 
-              <div className="flex items-center justify-between rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-4 font-mono text-xs text-emerald-700 shadow-xs dark:text-emerald-400">
+              <div className={cn(
+                "flex items-center justify-between rounded-2xl border p-4 font-mono text-xs shadow-xs",
+                "border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
+              )}>
                 <div className="flex items-center gap-2 font-medium">
                   <CheckCircle2 className="h-4 w-4 shrink-0" />
                   <span>All multi-resolution HLS renditions ({renditionsSummary}) are ready for adaptive streaming.</span>
                 </div>
               </div>
             </>
+          ) : isCancelled ? (
+            <div className="relative flex flex-col items-center justify-center p-4 text-center">
+              {cancelledCountdown !== null && (
+                <div className="mb-4 rounded-full bg-slate-100 dark:bg-slate-900/80 backdrop-blur-md px-3.5 py-1 font-mono text-xs text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700/50 shadow-xs">
+                  Refreshing in {cancelledCountdown}s
+                </div>
+              )}
+              <div className="relative overflow-hidden rounded-2xl w-full max-w-xl aspect-video shadow-md border border-slate-200 dark:border-slate-800/80">
+                <video
+                  src="/cancelled.mp4"
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                  className="h-full w-full object-cover rounded-2xl"
+                />
+              </div>
+              <h2 className="mt-5 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                Processing stopped. Your progress didn&apos;t.
+              </h2>
+              <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400 max-w-md">
+                Completed chunks are safe. Resume the remaining work whenever you&apos;re ready.
+              </p>
+            </div>
           ) : (
             <ProcessingState
-              video={video}
+              video={displayVideo}
               processingState={processingState}
               isConnected={isConnected}
               isCompleted={isCompleted}
@@ -357,6 +481,31 @@ export default function VideoDetailPage({
                 <span>Delete asset</span>
               </Button>
             )}
+
+            {canCancel && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setIsCancelModalOpen(true)}
+                className="w-full h-8.5 text-xs"
+              >
+                <Ban className="h-3.5 w-3.5" />
+                <span>Cancel Processing</span>
+              </Button>
+            )}
+
+            {canResume && (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleResume}
+                isLoading={isResuming}
+                className="w-full h-8.5 text-xs"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>Resume Processing</span>
+              </Button>
+            )}
           </div>
           </div>
 
@@ -366,7 +515,18 @@ export default function VideoDetailPage({
 
       </div>
 
-      {/* Delete Confirmation Modal */}
+      {/* Cancellation Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={isCancelModalOpen}
+        onClose={() => setIsCancelModalOpen(false)}
+        onConfirm={handleConfirmCancel}
+        title="Cancel Video Processing?"
+        description="Active transcoding will be stopped and unfinished chunks and renditions will be cancelled. This is a full cancellation, not a pause; resume is available only after processing has completely stopped."
+        confirmText="Cancel Processing"
+        cancelText="Keep Processing"
+        isDeleting={isCancelling}
+      />
+
       <ConfirmationModal
         isOpen={isDeleteModalOpen}
         onClose={() => setIsDeleteModalOpen(false)}

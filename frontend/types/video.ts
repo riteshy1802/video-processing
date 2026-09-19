@@ -8,7 +8,16 @@ export type VideoStatus =
   | "queued"
   | "processing"
   | "PROCESSING"
+  | "finalizing"
+  | "FINALIZING"
+  | "cancelling"
+  | "CANCELLING"
+  | "cancelled"
+  | "CANCELLED"
   | "ready"
+  | "done"
+  | "DONE"
+  | "completed"
   | "COMPLETED"
   | "failed"
   | "FAILED";
@@ -16,6 +25,8 @@ export type VideoStatus =
 export type RenditionStatus =
   | "queued"
   | "processing"
+  | "cancelling"
+  | "cancelled"
   | "ready"
   | "failed";
 
@@ -72,32 +83,19 @@ export interface ChunkProgressState {
   rendition_id: string;
   resolution: string;
   worker_id?: string;
-  status: "PENDING" | "PROCESSING" | "DONE" | "FAILED";
+  status: "PENDING" | "PROCESSING" | "DONE" | "FAILED" | "CANCELLED";
   progress: number;
   start_seconds?: number;
   end_seconds?: number;
   error?: string;
   message?: string;
-  ffmpeg?: FFmpegProgressInfo;
   updated_at?: string;
-}
-
-export interface FFmpegProgressInfo {
-  frame?: number | null;
-  fps?: number | null;
-  time?: string | null;
-  speed?: string | null;
-  bitrate?: string | null;
-  total_size?: number | null;
-  dup_frames?: number | null;
-  drop_frames?: number | null;
-  progress?: string | null;
 }
 
 export interface RenditionProgressState {
   rendition_id: string;
   resolution: string;
-  status: "PENDING" | "PROCESSING" | "READY" | "FAILED";
+  status: "PENDING" | "PROCESSING" | "CANCELLING" | "CANCELLED" | "READY" | "FAILED";
   progress: number;
   total_chunks: number;
   completed_chunks: number;
@@ -128,7 +126,6 @@ export interface SSEEventData {
   progress?: number;
   error?: string;
   message?: string;
-  ffmpeg?: FFmpegProgressInfo;
   thumbnail_url?: string;
   thumbnail_version?: number;
 }

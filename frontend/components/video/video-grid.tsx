@@ -25,6 +25,7 @@ const STATUS_OPTIONS = [
   { label: "Ready", value: "ready" },
   { label: "Processing", value: "processing" },
   { label: "Queued", value: "queued" },
+  { label: "Cancelled", value: "cancelled" },
   { label: "Uploading", value: "uploading" },
 ];
 
@@ -61,8 +62,13 @@ export function VideoGrid({
     const matchesSearch = video.filename
       .toLowerCase()
       .includes(searchQuery.toLowerCase());
+    const statusLower = (video.status || "").toLowerCase();
     const matchesStatus =
-      statusFilter === "all" || video.status === statusFilter;
+      statusFilter === "all"
+        ? true
+        : statusFilter === "cancelled"
+        ? statusLower === "cancelled" || statusLower === "canceled" || statusLower === "cancelling"
+        : video.status === statusFilter;
     return matchesSearch && matchesStatus;
   });
 

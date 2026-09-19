@@ -369,6 +369,49 @@ export const VideoAPI = {
     return { video_id: videoId, status: "UPLOADED" };
   },
 
+  async cancelVideo(videoId: string): Promise<"PROCESSING" | "CANCELLING" | "CANCELLED"> {
+    if (videoId.startsWith("vid_demo_")) {
+      throw new Error("Demo videos cannot be cancelled");
+    }
+    try {
+      const response = await apiClient.post(`/api/videos/${videoId}/cancel`);
+      return String(response.data.status).toUpperCase() as "PROCESSING" | "CANCELLING" | "CANCELLED";
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error)) {
+        throw new Error(
+          error.response?.data?.detail || error.message || "Cancellation request failed"
+        );
+      }
+      throw error;
+    }
+  },
+
+  async resumeVideo(videoId: string): Promise<{
+    status: "PROCESSING" | "UPLOADED";
+    resumed: boolean;
+    resumeStage?: "PLANNER" | "TRANSCODE" | "RENDITION_FINALIZER" | "MIXED" | "VIDEO_FINALIZER";
+  }> {
+    if (videoId.startsWith("vid_demo_")) {
+      throw new Error("Demo videos cannot be resumed");
+    }
+    try {
+      const response = await apiClient.post(`/api/videos/${videoId}/resume`);
+      const status = String(response.data.status).toUpperCase();
+      return {
+        status: status === "UPLOADED" ? "UPLOADED" : "PROCESSING",
+        resumed: Boolean(response.data.resumed),
+        resumeStage: response.data.resume_stage,
+      };
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error)) {
+        throw new Error(
+          error.response?.data?.detail || error.message || "Resume request failed"
+        );
+      }
+      throw error;
+    }
+  },
+
   async renameVideo(videoId: string, name: string): Promise<string> {
     if (videoId.startsWith("vid_demo_")) {
       throw new Error("Demo videos cannot be renamed because they are not stored in PostgreSQL");

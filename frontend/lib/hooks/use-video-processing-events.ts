@@ -46,9 +46,6 @@ function chunkFrom(data: Record<string, unknown>): ChunkProgressState {
     error: typeof data.error === "string" ? data.error : undefined,
     message: typeof data.message === "string" ? data.message : undefined,
   };
-  if (data.ffmpeg && typeof data.ffmpeg === "object") {
-    chunk.ffmpeg = data.ffmpeg as ChunkProgressState["ffmpeg"];
-  }
   return chunk;
 }
 
@@ -131,6 +128,57 @@ function applyEvent(previous: VideoProcessingState | null, videoId: string, data
   if (type === "video.finalizing") next = { ...next, video_status: "FINALIZING" };
   if (type === "video.ready") next = { ...next, video_status: "READY" };
   if (type === "video.failed") next = { ...next, video_status: "FAILED" };
+  if (type === "video.resumed") {
+    next = {
+      ...next,
+      video_status: "PROCESSING",
+      renditions: next.renditions.map((rendition) => rendition.status === "CANCELLED"
+        ? {
+            ...rendition,
+            status: "PROCESSING" as const,
+            chunks: rendition.chunks.map((chunk) => chunk.status === "CANCELLED"
+              ? {
+                  ...chunk,
+                  status: "PENDING" as const,
+                  progress: 0,
+                  worker_id: undefined,
+                  error: undefined,
+                }
+              : chunk),
+          }
+        : rendition),
+    };
+  }
+  if (type === "video.cancelling") {
+    next = {
+      ...next,
+      video_status: "CANCELLING",
+      renditions: next.renditions.map((rendition) => rendition.status === "READY"
+        ? rendition
+        : {
+            ...rendition,
+            status: "CANCELLING" as const,
+            chunks: rendition.chunks.map((chunk) => chunk.status === "PENDING"
+              ? { ...chunk, status: "CANCELLED" as const }
+              : chunk),
+          }),
+    };
+  }
+  if (type === "video.cancelled") {
+    next = {
+      ...next,
+      video_status: "CANCELLED",
+      renditions: next.renditions.map((rendition) => rendition.status === "READY"
+        ? rendition
+        : {
+            ...rendition,
+            status: "CANCELLED" as const,
+            chunks: rendition.chunks.map((chunk) => COMPLETE_CHUNK_STATUSES.has(chunk.status)
+              ? chunk
+              : { ...chunk, status: "CANCELLED" as const }),
+          }),
+    };
+  }
 
   const renditionId = String(data.rendition_id ?? "");
   const resolution = resolutionLabel(data.resolution);
@@ -143,7 +191,7 @@ function applyEvent(previous: VideoProcessingState | null, videoId: string, data
     
     // Exact lookup by chunk_id first, fallback to chunk_index
     let chunkIdx = rendition.chunks.findIndex((item) => item.chunk_id === chunk.chunk_id && chunk.chunk_id !== "undefined");
-    if (chunkIdx === -1 && typeof chunk.chunk_index === "number") {
+    if (chunkIdx === -1 && type !== "chunk.cancelled" && typeof chunk.chunk_index === "number") {
       chunkIdx = rendition.chunks.findIndex((item) => item.chunk_index === chunk.chunk_index);
     }
 
@@ -155,7 +203,6 @@ function applyEvent(previous: VideoProcessingState | null, videoId: string, data
         ...current,
         ...chunk,
         progress: Math.max(current.progress, chunk.progress),
-        ffmpeg: chunk.ffmpeg ?? current.ffmpeg,
       };
     }
 
@@ -163,6 +210,8 @@ function applyEvent(previous: VideoProcessingState | null, videoId: string, data
     // after its finalizer publishes rendition.ready.
     rendition.status = chunk.status === "FAILED"
       ? "FAILED"
+      : chunk.status === "CANCELLED"
+        ? (rendition.status === "READY" ? "READY" : "CANCELLING")
       : rendition.status === "READY"
         ? "READY"
         : "PROCESSING";
@@ -188,6 +237,8 @@ export function useVideoProcessingEvents(videoId: string, options: UseVideoProce
   const [isConnected, setIsConnected] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
   const [isFailed, setIsFailed] = useState(false);
+  const [isCancelled, setIsCancelled] = useState(false);
+  const [connectionVersion, setConnectionVersion] = useState(0);
   const onVideoReadyRef = useRef(onVideoReady);
   const onThumbnailReadyRef = useRef(onThumbnailReady);
   const readyNotifiedRef = useRef(false);
@@ -209,6 +260,27 @@ export function useVideoProcessingEvents(videoId: string, options: UseVideoProce
     const handlePayload = (data: Record<string, unknown>) => {
       try {
         if (data.type === "ping" || data.type === "keepalive") return;
+        if (data.type === "video.cancelled") {
+          setIsCancelled(true);
+          void (async () => {
+            try {
+              const response = await fetch(`${API_BASE_URL}/api/videos/${videoId}/processing-state`, {
+                cache: "no-store",
+              });
+              if (response.ok && !cancelled) {
+                const durableSnapshot = await response.json() as Record<string, unknown>;
+                setProcessingState(snapshotFrom(videoId, durableSnapshot));
+              }
+            } catch (error) {
+              console.error("Error loading terminal cancellation snapshot:", error);
+            } finally {
+              source?.close();
+              source = null;
+              setIsConnected(false);
+            }
+          })();
+          return;
+        }
         const isSnapshot = data.type === "initial.state" || data.type === "snapshot";
         const snapshot = data.type === "snapshot" ? data.snapshot as Record<string, unknown> : data;
         setProcessingState((previous) => isSnapshot ? snapshotFrom(videoId, snapshot) : applyEvent(previous, videoId, data));
@@ -226,10 +298,13 @@ export function useVideoProcessingEvents(videoId: string, options: UseVideoProce
         }
 
         const videoStatus = String(data.status ?? data.video_status ?? "").toUpperCase();
-        const isTerminalSnapshot =
+        const isReadySnapshot =
           (data.type === "initial.state" || data.type === "snapshot") &&
           videoStatus === "READY";
-        if (data.type === "video.ready" || isTerminalSnapshot) {
+        const isCancelledSnapshot =
+          (data.type === "initial.state" || data.type === "snapshot") &&
+          videoStatus === "CANCELLED";
+        if (data.type === "video.ready" || isReadySnapshot) {
           setIsCompleted(true);
           if (!readyNotifiedRef.current) {
             readyNotifiedRef.current = true;
@@ -237,6 +312,8 @@ export function useVideoProcessingEvents(videoId: string, options: UseVideoProce
           }
         } else if (data.type === "video.failed" || videoStatus === "FAILED") {
           setIsFailed(true);
+        } else if (data.type === "video.cancelled" || isCancelledSnapshot) {
+          setIsCancelled(true);
         }
       } catch (error) {
         console.error("Error parsing SSE message:", error);
@@ -250,7 +327,11 @@ export function useVideoProcessingEvents(videoId: string, options: UseVideoProce
           cache: "no-store",
         });
         if (response.ok && !cancelled) {
-          handlePayload(await response.json() as Record<string, unknown>);
+          const snapshot = await response.json() as Record<string, unknown>;
+          handlePayload(snapshot);
+          if (String(snapshot.status ?? snapshot.video_status ?? "").toUpperCase() === "CANCELLED") {
+            return;
+          }
         }
       } catch (error) {
         console.error("Error loading processing snapshot:", error);
@@ -276,7 +357,52 @@ export function useVideoProcessingEvents(videoId: string, options: UseVideoProce
       source?.close();
       setIsConnected(false);
     };
-  }, [videoId, enabled]);
+  }, [videoId, enabled, connectionVersion]);
 
-  return { processingState, isConnected, isCompleted, isFailed };
+  const applyCancellationStatus = (status: "PROCESSING" | "CANCELLING" | "CANCELLED") => {
+    if (status === "CANCELLED") {
+      setProcessingState((previous) => previous
+        ? { ...previous, video_status: "CANCELLED" }
+        : previous);
+      setIsCancelled(true);
+      setConnectionVersion((version) => version + 1);
+      return;
+    }
+    setProcessingState((previous) => {
+      if (previous?.video_status === "CANCELLED") return previous;
+      return applyEvent(previous, videoId, {
+        type: status === "CANCELLING" ? "video.cancelling" : "video.processing",
+        video_id: videoId,
+        status,
+      });
+    });
+    setIsCancelled(false);
+  };
+
+  const applyResumeStatus = () => {
+    setProcessingState((previous) => applyEvent(previous, videoId, {
+      type: "video.resumed",
+      video_id: videoId,
+      status: "PROCESSING",
+    }));
+    setIsCancelled(false);
+    setIsCompleted(false);
+    setIsFailed(false);
+    setConnectionVersion((version) => version + 1);
+  };
+
+  const reconnectProcessingEvents = () => {
+    setConnectionVersion((version) => version + 1);
+  };
+
+  return {
+    processingState,
+    isConnected,
+    isCompleted,
+    isFailed,
+    isCancelled,
+    applyCancellationStatus,
+    applyResumeStatus,
+    reconnectProcessingEvents,
+  };
 }

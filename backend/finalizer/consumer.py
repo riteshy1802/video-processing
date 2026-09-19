@@ -17,4 +17,7 @@ def create_finalizer_consumer() -> KafkaConsumer:
         enable_auto_commit=False,
         auto_offset_reset="earliest",
         max_poll_records=1,
+        max_poll_interval_ms=1800000,
+        session_timeout_ms=45000,
+        heartbeat_interval_ms=10000,
     )

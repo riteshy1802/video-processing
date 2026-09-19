@@ -1,7 +1,7 @@
 import React from "react";
 import { VideoStatus, RenditionStatus } from "@/types/video";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle2, Clock, AlertCircle, Loader2, Upload } from "lucide-react";
+import { CheckCircle2, Clock, AlertCircle, Loader2, Upload, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface VideoStatusBadgeProps {
@@ -37,6 +37,33 @@ export function VideoStatusBadge({
         <Badge variant="sky" className={cn("gap-1.5 font-semibold bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-200 dark:border-sky-500/30", className)}>
           {showIcon && <Loader2 className="h-3 w-3 animate-spin text-sky-600 dark:text-sky-400" />}
           <span>Processing</span>
+        </Badge>
+      );
+
+    case "finalizing":
+    case "FINALIZING":
+      return (
+        <Badge variant="sky" className={cn("gap-1.5 font-semibold bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-200 dark:border-sky-500/30", className)}>
+          {showIcon && <Loader2 className="h-3 w-3 animate-spin text-sky-600 dark:text-sky-400" />}
+          <span>Finalizing</span>
+        </Badge>
+      );
+
+    case "cancelling":
+    case "CANCELLING":
+      return (
+        <Badge variant="slate" className={cn("gap-1.5 font-semibold", className)}>
+          {showIcon && <Loader2 className="h-3 w-3 animate-spin" />}
+          <span>Cancelling</span>
+        </Badge>
+      );
+
+    case "cancelled":
+    case "CANCELLED":
+      return (
+        <Badge variant="rose" className={cn("gap-1.5 font-semibold", className)}>
+          {showIcon && <XCircle className="h-3 w-3" />}
+          <span>Cancelled</span>
         </Badge>
       );
 

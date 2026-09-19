@@ -170,5 +170,148 @@ class VideoRepository:
         await db.commit()
         return event
 
+    async def get_status(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> str | None:
+        stmt = (
+            select(Video.status)
+            .where(Video.id == video_id)
+        )
+
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_status_for_update(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> str | None:
+        """Lock a video row while a worker/cancellation transition is settled."""
+        stmt = select(Video.status).where(Video.id == video_id).with_for_update()
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def mark_cancelling(self, db: AsyncSession, video_id: uuid.UUID) -> bool:
+        """
+            Atomically transition active pipeline work to CANCELLING.
+
+            Returns True if the video was transitioned.
+            Returns False if it was not in an active cancellable state.
+        """
+        stmt = (
+            update(Video)
+            .where(
+                Video.id == video_id,
+                Video.status.in_(["UPLOADED", "PROCESSING", "FINALIZING"]),
+            )
+            .values(
+                status="CANCELLING",
+            )
+        )
+        result = await db.execute(stmt)
+        return result.rowcount > 0
+
+    async def mark_ready_if_finalizing(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+        completed_at: datetime,
+    ) -> bool:
+        """Prevent cancellation from being overwritten by a READY transition."""
+        stmt = (
+            update(Video)
+            .where(
+                Video.id == video_id,
+                Video.status == "FINALIZING",
+            )
+            .values(
+                status="READY",
+                completed_at=completed_at,
+            )
+        )
+        result = await db.execute(stmt)
+        return result.rowcount == 1
+
+    async def mark_cancelled(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> bool:
+        """
+            Transition CANCELLING -> CANCELLED after no active chunks remain.
+        """
+        stmt = (
+            update(Video)
+            .where(
+                Video.id == video_id,
+                Video.status == "CANCELLING",
+            )
+            .values(
+                status="CANCELLED",
+            )
+        )
+        result = await db.execute(stmt)
+        return result.rowcount > 0
+
+    async def continue_cancelled_completion(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> bool:
+        """Return CANCELLING to PROCESSING only for legitimate finalization."""
+        stmt = (
+            update(Video)
+            .where(
+                Video.id == video_id,
+                Video.status == "CANCELLING",
+            )
+            .values(status="PROCESSING")
+        )
+        result = await db.execute(stmt)
+        return result.rowcount == 1
+
+    async def resume_cancelled(self, db: AsyncSession, video_id: uuid.UUID) -> bool:
+        """Conditionally transition a fully CANCELLED video back to PROCESSING."""
+        stmt = (
+            update(Video)
+            .where(
+                Video.id == video_id,
+                Video.status == "CANCELLED",
+            )
+            .values(
+                status="PROCESSING",
+                completed_at=None,
+                finalizing_started_at=None,
+                error_message=None,
+            )
+        )
+        result = await db.execute(stmt)
+        return result.rowcount == 1
+
+    async def resume_cancelled_for_planning(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> bool:
+        """Restore a pre-plan cancellation to the Planner's expected state."""
+        stmt = (
+            update(Video)
+            .where(
+                Video.id == video_id,
+                Video.status == "CANCELLED",
+            )
+            .values(
+                status="UPLOADED",
+                completed_at=None,
+                finalizing_started_at=None,
+                error_message=None,
+            )
+        )
+        result = await db.execute(stmt)
+        return result.rowcount == 1
+
+
 
 video_repository = VideoRepository()

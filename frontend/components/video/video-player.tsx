@@ -30,6 +30,7 @@ interface VideoPlayerProps {
   onQualityChange?: (quality: string) => void;
   onMetadataLoaded?: (metadata: { duration: number; width: number; height: number }) => void;
   renditions?: Rendition[];
+  initialDuration?: number;
 }
 
 export function VideoPlayer({
@@ -42,6 +43,7 @@ export function VideoPlayer({
   onQualityChange,
   onMetadataLoaded,
   renditions,
+  initialDuration = 0,
 }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -56,7 +58,13 @@ export function VideoPlayer({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [duration, setDuration] = useState<number>(initialDuration || 0);
+
+  useEffect(() => {
+    if (initialDuration && initialDuration > 0) {
+      setDuration((prev) => (prev > 0 ? prev : initialDuration));
+    }
+  }, [initialDuration]);
   const [error, setError] = useState<string | null>(null);
   const [levels, setLevels] = useState<{ id: number; height: number; bitrate: number }[]>([]);
   const [internalQuality, setInternalQuality] = useState<string>("auto");
@@ -279,7 +287,9 @@ export function VideoPlayer({
     };
 
     const updateTime = () => {
-      const dur = Number.isFinite(video.duration) ? video.duration : 0;
+      const dur = Number.isFinite(video.duration) && video.duration > 0
+        ? video.duration
+        : (initialDuration || 0);
       setDuration(dur);
 
       if (video.ended || playbackEndedRef.current) {

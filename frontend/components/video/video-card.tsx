@@ -34,6 +34,8 @@ export function VideoCard({ video, onRenamed }: VideoCardProps) {
   const [isSaving, setIsSaving] = useState(false);
   const isProcessing = video.status === "processing";
   const isReady = video.status === "ready";
+  const statusLower = (video.status || "").toLowerCase();
+  const isCancelled = statusLower === "cancelled" || statusLower === "canceled" || statusLower === "cancelling";
   const canRename = !video.id.startsWith("vid_demo_");
   const resolutionLabel = getResolutionLabel(video.width, video.height);
   const { name: currentName, extension } = splitFilename(video.filename);
@@ -101,7 +103,7 @@ export function VideoCard({ video, onRenamed }: VideoCardProps) {
               <Play className="h-5 w-5 ml-0.5 fill-current" />
             </div>
           </div>
-        ) : (
+        ) : isCancelled ? null : (
           <div className="relative z-10 flex flex-col items-center gap-2 text-slate-400 dark:text-slate-600 group-hover:text-slate-600 dark:group-hover:text-slate-400 transition-colors">
             <Film className="h-8 w-8" />
             <span className="text-[10px] font-mono tracking-wider uppercase font-medium">

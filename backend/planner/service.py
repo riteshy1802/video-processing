@@ -10,6 +10,8 @@ from app.repositories.rendition_repository import rendition_repository
 from app.models.rendition import Rendition
 from app.models.chunk import Chunk
 from app.services.s3 import s3_service
+from app.services.pipeline_cancellation import is_video_cancellation_requested
+from app.services.redis_publisher import publish_event_async
 from worker.producer import get_worker_producer, publish_chunk
 
 logger = logging.getLogger("planner")
@@ -54,7 +56,10 @@ def select_source_frame_rate(
     return nominal_rate if 1.0 <= nominal_rate <= 240.0 else 30.0
 
 
-async def probe_source_frame_rate(video) -> float:
+async def probe_source_frame_rate(
+    video,
+    cancel_event: asyncio.Event | None = None,
+) -> float:
     """Return a sane source FPS, deriving it from packets for malformed VFR WebM."""
     input_url = s3_service.generate_presigned_get_url(
         s3_key=video.s3_key,
@@ -83,20 +88,47 @@ async def probe_source_frame_rate(video) -> float:
     except OSError as ex:
         logger.warning("Could not start FFprobe for FPS detection: %s", ex)
         return 30.0
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=FPS_PROBE_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
+    communicate_task = asyncio.create_task(process.communicate())
+    cancel_task = (
+        asyncio.create_task(cancel_event.wait()) if cancel_event is not None else None
+    )
+    waiters = {communicate_task}
+    if cancel_task is not None:
+        waiters.add(cancel_task)
+    done, _ = await asyncio.wait(
+        waiters,
+        timeout=FPS_PROBE_TIMEOUT_SECONDS,
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if cancel_task is not None and cancel_task in done:
+        if process.returncode is None:
+            process.terminate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                asyncio.shield(communicate_task),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            stdout, stderr = await communicate_task
+        logger.info("Stopped FFprobe because video %s was cancelled", video.id)
+        return 30.0
+    if communicate_task not in done:
         process.kill()
-        await process.communicate()
+        stdout, stderr = await communicate_task
         logger.warning(
             "FFprobe FPS detection timed out after %.1f seconds for video %s; using 30 fps",
             FPS_PROBE_TIMEOUT_SECONDS,
             video.id,
         )
         return 30.0
+    stdout, stderr = communicate_task.result()
+    if cancel_task is not None:
+        cancel_task.cancel()
+        try:
+            await cancel_task
+        except asyncio.CancelledError:
+            pass
     if process.returncode != 0:
         logger.warning(
             "FFprobe FPS detection failed: %s", stderr.decode(errors="replace")
@@ -149,7 +181,10 @@ def determine_chunks(duration_seconds: float) -> list[tuple[float, float]]:
     return chunks
 
 
-async def plan_video_async(video_id: str) -> bool:
+async def plan_video_async(
+    video_id: str,
+    cancel_event: asyncio.Event | None = None,
+) -> bool:
     """
     Async implementation that executes in a single database transaction
     and commits all Rendition, Chunk, and VideoEvent records atomically.
@@ -172,6 +207,14 @@ async def plan_video_async(video_id: str) -> bool:
                     f"Video {video_id} does not exist in database. Skipping."
                 )
                 return False
+
+            if video.status in {"CANCELLING", "CANCELLED"}:
+                logger.info(
+                    "Skipping planner job for video %s because status is %s",
+                    video_id,
+                    video.status,
+                )
+                return True
 
             # 2. Make sure upload has completed
             if video.status != "UPLOADED":
@@ -203,7 +246,19 @@ async def plan_video_async(video_id: str) -> bool:
 
             chunk_ranges = determine_chunks(video.duration_seconds)
 
-            video.source_frame_rate = await probe_source_frame_rate(video)
+            video.source_frame_rate = await probe_source_frame_rate(video, cancel_event)
+
+            await db.refresh(video, attribute_names=["status"])
+            if (
+                video.status in {"CANCELLING", "CANCELLED"}
+                or (cancel_event is not None and cancel_event.is_set())
+            ):
+                logger.info(
+                    "Stopping planner job for video %s before creating work because it was cancelled",
+                    video_id,
+                )
+                await db.rollback()
+                return True
 
             logger.info(
                 f"Planning video {video.id}: duration={video.duration_seconds:.2f}s, "
@@ -292,9 +347,7 @@ async def plan_video_async(video_id: str) -> bool:
 
             # Publish after the DB commit: the UI can immediately replace its
             # pending planner state with the actual rendition/chunk plan.
-            from app.services.redis_publisher import publish_event_sync
-
-            publish_event_sync(
+            await publish_event_async(
                 video.id,
                 {
                     "type": "planner.completed",
@@ -309,13 +362,31 @@ async def plan_video_async(video_id: str) -> bool:
 
             # 9. Publish created chunk transcode jobs to Kafka topic transcode.jobs, Planning completed here.
             try:
+                if await is_video_cancellation_requested(video.id, cancel_event):
+                    logger.info(
+                        "Skipping transcode job publication for cancelled video %s",
+                        video.id,
+                    )
+                    return True
                 worker_producer = get_worker_producer()
                 if worker_producer:
+                    published_count = 0
                     for cid in created_chunk_ids:
-                        publish_chunk(producer=worker_producer, chunk_id=cid)
-                    worker_producer.flush()
+                        if await is_video_cancellation_requested(video.id, cancel_event):
+                            logger.info(
+                                "Stopped publishing transcode jobs for cancelled video %s",
+                                video.id,
+                            )
+                            break
+                        await asyncio.to_thread(
+                            publish_chunk,
+                            producer=worker_producer,
+                            chunk_id=cid,
+                        )
+                        published_count += 1
+                    await asyncio.to_thread(worker_producer.flush)
                     logger.info(
-                        f"Published {len(created_chunk_ids)} chunk transcode job(s) for video {video.id} to Kafka topic '{settings.KAFKA_WORKER_TOPIC}'."
+                        f"Published {published_count} chunk transcode job(s) for video {video.id} to Kafka topic '{settings.KAFKA_WORKER_TOPIC}'."
                     )
             except Exception as e:
                 logger.warning(

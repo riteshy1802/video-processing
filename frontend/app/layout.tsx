@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Transcode.io | Distributed Video Processing & Transcoding",
+  title: "Transcode.io",
   description:
     "Professional distributed video transcoding and adaptive bitrate streaming platform.",
   icons: {

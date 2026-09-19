@@ -1,0 +1,107 @@
+---
+title: Kafka & Workers
+description: How Kafka topics and worker processes drive the transcoding pipeline.
+---
+
+import { ArchitectureDiagram } from '@/components/docs/architecture-diagram';
+
+## Event Bus & Worker Lifecycle
+
+Kafka is the backbone of the processing pipeline. Each stage publishes work to a topic; the next stage consumes it.
+
+<ArchitectureDiagram
+  src="/architecture/worker_distributed_processing.svg"
+  alt="Kafka worker distributed processing diagram"
+  caption="Workers consume from Kafka topics; multiple workers share a consumer group"
+/>
+
+## Topic chain
+
+```
+planner.jobs
+    ↓  Planner Worker
+transcode.jobs
+    ↓  Transcode Workers (N workers in parallel)
+finalize.jobs
+    ↓  Rendition Finalizer
+video.finalize.jobs
+    ↓  Video Finalizer
+```
+
+## Topic reference
+
+| Topic | Producer | Consumer | Purpose |
+|---|---|---|---|
+| `planner.jobs` | Backend API | Planner Worker | Triggers planning for an uploaded video |
+| `transcode.jobs` | Planner Worker | Transcode Workers | Carries one chunk per message to transcode |
+| `finalize.jobs` | Transcode Worker | Rendition Finalizer | Signals a rendition is ready to assemble |
+| `video.finalize.jobs` | Rendition Finalizer | Video Finalizer | Signals all renditions are ready to finalize |
+
+> [!IMPORTANT]
+> PostgreSQL is the authoritative state store. Kafka delivers work requests, but workers always check PostgreSQL before acting on a message.
+
+## Worker details
+
+### Planner Worker
+
+Consumes from `planner.jobs`.
+
+**Responsibilities:**
+- Fetch video metadata from the database
+- Probe source video resolution and duration
+- Determine the rendition ladder (which resolutions to produce)
+- Calculate time-range chunks for parallel transcoding
+- Create `Rendition` records (status `PENDING`)
+- Create `Chunk` records (status `PENDING`)
+- Publish one message per chunk to `transcode.jobs`
+
+A single planner message results in many transcode messages — one per chunk per rendition combination.
+
+---
+
+### Transcode Worker
+
+Consumes from `transcode.jobs`. Multiple instances run concurrently.
+
+**Responsibilities:**
+- Mark chunk `PROCESSING`
+- Download the relevant time slice from S3 (via pre-signed URL fed directly to FFmpeg)
+- Run FFmpeg to produce HLS `.ts` fragments at the target resolution
+- Upload output fragments to S3
+- Mark chunk `DONE`
+- Check if all sibling chunks for the rendition are `DONE`; if yes, publish to `finalize.jobs`
+
+Workers are stateless and horizontally scalable. Add more `make worker` processes to increase throughput.
+
+---
+
+### Rendition Finalizer
+
+Consumes from `finalize.jobs`.
+
+**Responsibilities:**
+- Verify all required chunks for the rendition are `DONE`
+- Construct the `index.m3u8` playlist referencing all chunk `.ts` files
+- Upload the playlist to S3
+- Mark the rendition `READY`
+- Check if all sibling renditions for the video are `READY`; if yes, publish to `video.finalize.jobs`
+
+---
+
+### Video Finalizer
+
+Consumes from `video.finalize.jobs`.
+
+**Responsibilities:**
+- Verify all renditions are `READY`
+- Generate `master.m3u8` listing all rendition playlists with `BANDWIDTH` and `RESOLUTION` attributes
+- Upload the master playlist to S3
+- Mark the video `READY`
+
+---
+
+## Consumer groups
+
+All workers of the same type share a Kafka consumer group. Kafka distributes topic partitions across group members — each chunk message is consumed by exactly one worker.
+
+This means you can scale out by simply running more worker processes.

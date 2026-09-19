@@ -1,0 +1,40 @@
+---
+title: Realtime Progress
+description: How the frontend receives live processing updates via Server-Sent Events.
+---
+
+The frontend shows live progress as workers process chunks — without polling the API.
+
+## Server-Sent Events (SSE)
+
+The backend exposes an SSE endpoint that the frontend connects to when viewing a video in `PROCESSING` state. The backend pushes updates whenever:
+
+- A chunk transitions to `DONE`
+- A rendition transitions to `READY`
+- The video reaches `READY`, `FAILED`, or `CANCELLED`
+
+The frontend renders this as a live progress indicator per rendition.
+
+## Redis Pub/Sub
+
+Workers publish progress events to Redis. The FastAPI backend subscribes to these Redis channels and forwards the events to connected SSE clients.
+
+```
+Worker → Redis (PUBLISH) → FastAPI SSE endpoint → Browser
+```
+
+This keeps workers decoupled from the HTTP layer. Workers don't know or care who is watching; they just publish to Redis.
+
+## Cancellation signals
+
+Redis also carries cancellation signals in the opposite direction:
+
+```
+User clicks Cancel → Backend → Redis (PUBLISH cancel signal)
+                                     ↓
+                               Workers subscribe and stop work
+```
+
+When a worker receives a cancellation signal for a video it is currently processing, it terminates the active FFmpeg process and marks the chunk `CANCELLED`.
+
+See [Cancellation](/docs/cancellation-recovery/cancellation) for the full cancellation flow.

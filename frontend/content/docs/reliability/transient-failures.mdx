@@ -1,0 +1,48 @@
+---
+title: Transient Failures
+description: How the system handles temporary network and S3 errors.
+---
+
+import { ArchitectureDiagram } from '@/components/docs/architecture-diagram';
+
+## Network & Storage Retries
+
+Transient failures are temporary errors that are expected to resolve on their own:
+
+- Network timeouts
+- S3 throttling or temporary unavailability
+- DNS resolution failures
+- Short-lived service disruptions
+
+<ArchitectureDiagram
+  src="/architecture/transient_failure_network_s3.svg"
+  alt="Transient network and S3 failure handling"
+  caption="Workers encounter transient errors; the chunk remains retryable via Kafka redelivery"
+/>
+
+## How they are handled
+
+When a worker encounters a transient error (e.g. S3 download fails with a network error):
+
+1. The worker does **not** mark the chunk `FAILED`
+2. The worker raises an exception / does not commit the Kafka offset
+3. Kafka redelivers the message after the consumer timeout
+4. Another worker (or the same worker) retries the chunk from scratch
+
+Because the chunk remains in `PROCESSING` or `PENDING` state, it is fully retryable.
+
+> [!NOTE]
+> The distinction between transient and permanent failures is important. Misclassifying a permanent failure as transient would cause an infinite retry loop. Workers classify errors based on the exception type and HTTP status code returned.
+
+## Examples of transient errors
+
+| Error | Outcome |
+|---|---|
+| S3 connection timeout | Chunk retried via Kafka redelivery |
+| Network reset mid-download | Chunk retried via Kafka redelivery |
+| S3 throttling (HTTP 503) | Chunk retried via Kafka redelivery |
+| FFmpeg stdout pipe error | Chunk retried via Kafka redelivery |
+
+## Resume as recovery
+
+For longer outages, the **Resume Processing** function can also be used to re-queue incomplete chunks after the infrastructure is restored. See [Resume Processing](/docs/cancellation-recovery/resume-processing).

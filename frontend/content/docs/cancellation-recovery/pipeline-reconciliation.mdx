@@ -1,0 +1,82 @@
+---
+title: Pipeline Reconciliation
+description: The decision logic for determining what work to publish on resume.
+---
+
+When a video is resumed, the backend runs a reconciliation pass. It inspects the current PostgreSQL state and determines the minimum set of Kafka messages needed to complete the video.
+
+## Decision tree
+
+```
+Resume triggered
+      ↓
+Query PostgreSQL for video renditions
+      │
+      ├── No renditions exist
+      │      → publish video ID to planner.jobs
+      │        (planner will create renditions and chunks)
+      │
+      └── Renditions exist → iterate each rendition
+               │
+               ├── Rendition status = READY
+               │      → skip (already done)
+               │
+               ├── Rendition has chunks with status PENDING or CANCELLED
+               │      → publish each incomplete chunk to transcode.jobs
+               │
+               └── All chunks DONE, rendition not READY
+                      → publish rendition ID to finalize.jobs
+
+After iterating all renditions:
+      │
+      └── All renditions READY, video not READY
+             → publish video ID to video.finalize.jobs
+```
+
+## Key principle
+
+We do **not** inspect Kafka history to determine whether a job was previously published. Kafka is write-only from the reconciliation perspective. The source of truth for what work remains is exclusively the PostgreSQL state of chunks and renditions.
+
+This means:
+- Duplicate Kafka messages are harmless (workers are idempotent)
+- Resume is correct even if Kafka was flushed or restarted
+- The reconciliation logic is simple and testable
+
+## Example scenarios
+
+**Scenario A: Cancelled after planner but before any transcoding**
+
+```
+Renditions: [360p CANCELLED, 720p CANCELLED]
+Chunks:     [all CANCELLED]
+
+→ Publish all chunks to transcode.jobs
+```
+
+**Scenario B: Cancelled mid-processing, some chunks done**
+
+```
+Renditions: [360p PROCESSING, 720p PROCESSING]
+Chunks:     [8 DONE, 4 CANCELLED, 2 PROCESSING]
+
+→ Publish the 4 CANCELLED + 2 PROCESSING chunks to transcode.jobs
+   (DONE chunks are preserved)
+```
+
+**Scenario C: Rendition assembly interrupted**
+
+```
+Renditions: [360p READY, 720p: all chunks DONE but status = PROCESSING]
+Chunks:     [all DONE]
+
+→ Publish 720p rendition ID to finalize.jobs
+```
+
+**Scenario D: All renditions ready, master playlist missing**
+
+```
+Renditions: [360p READY, 720p READY, 1080p READY]
+Video:      FINALIZING (never completed)
+
+→ Publish video ID to video.finalize.jobs
+```

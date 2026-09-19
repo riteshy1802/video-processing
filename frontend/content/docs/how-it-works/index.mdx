@@ -1,0 +1,70 @@
+---
+title: How It Works
+description: A simple mental model for how Transcode.io processes video from upload to stream.
+---
+
+import { ArchitectureDiagram } from '@/components/docs/architecture-diagram';
+
+## Execution Stages
+
+Understanding Transcode.io starts with a simple mental model. The full pipeline has six stages:
+
+```
+Video Upload
+    ↓
+Planning          — what renditions? how many chunks?
+    ↓
+Chunk Processing  — workers transcode each chunk in parallel
+    ↓
+Rendition Assembly— chunks assembled into per-resolution playlists
+    ↓
+Master Playlist   — single m3u8 references all renditions
+    ↓
+Adaptive Streaming— browser picks the best quality in real time
+```
+
+<ArchitectureDiagram
+  src="/architecture/all.svg"
+  alt="Full Transcode.io processing pipeline"
+  caption="End-to-end pipeline from upload to adaptive stream delivery"
+/>
+
+## Stage by stage
+
+### 1. Upload
+
+The browser uploads the source video file directly to S3 using a pre-signed URL. The upload happens client-side — the file never passes through the backend server. Once the upload completes, the frontend notifies the backend.
+
+### 2. Planning
+
+The backend publishes the video ID to the `planner.jobs` Kafka topic. The **Planner Worker** consumes this message, inspects the video's metadata (resolution, duration, codec), determines which rendition sizes to generate, and splits the video into processable time chunks. It creates `Rendition` and `Chunk` records in PostgreSQL and publishes a transcode job for each chunk to `transcode.jobs`.
+
+### 3. Chunk Processing
+
+**Transcode Workers** consume from `transcode.jobs`. Each worker:
+
+1. Claims a chunk record in PostgreSQL (status → `PROCESSING`)
+2. Downloads the required time range of the source from S3
+3. Runs FFmpeg to produce an HLS `.ts` fragment
+4. Uploads the output fragment to S3
+5. Marks the chunk `DONE` in PostgreSQL
+6. If this was the last chunk for a rendition, publishes to `finalize.jobs`
+
+Multiple workers run concurrently. Chunks for the same video can be processed simultaneously across different workers.
+
+### 4. Rendition Assembly
+
+The **Rendition Finalizer** consumes from `finalize.jobs`. It verifies all required chunks for a rendition are `DONE`, assembles the `.m3u8` playlist file for that resolution, uploads it to S3, and marks the rendition `READY`. If all renditions for the video are now ready, it publishes to `video.finalize.jobs`.
+
+### 5. Master Playlist
+
+The **Video Finalizer** consumes from `video.finalize.jobs`. It verifies all renditions are `READY`, generates the master `master.m3u8` playlist that references each rendition playlist, uploads it to S3, and marks the video `READY`.
+
+### 6. Adaptive Streaming
+
+The frontend detects the video is `READY` and loads the master playlist URL via **HLS.js**. The browser then automatically selects the best quality level based on available bandwidth and can switch quality in real time as network conditions change.
+
+---
+
+For more detail on each component, see [Architecture](/docs/architecture).  
+For the Kafka topics and message flow, see [Kafka Workers](/docs/architecture/kafka-workers).

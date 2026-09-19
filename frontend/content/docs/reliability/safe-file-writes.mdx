@@ -1,0 +1,42 @@
+---
+title: Safe File Writes
+description: How Transcode.io avoids partial or corrupted output files in S3.
+---
+
+import { ArchitectureDiagram } from '@/components/docs/architecture-diagram';
+
+## Atomic Storage Operations
+
+A worker that crashes mid-upload could leave a partial or corrupted file in S3. If another worker (or the finalizer) then reads this partial file, the output would be corrupt. This is prevented by a simple write strategy.
+
+<ArchitectureDiagram
+  src="/architecture/file_write_strategy_to_avoid_partial_corrupt_of_data.svg"
+  alt="Safe file write strategy — write to temp then rename"
+  caption="Write to a temporary key first; rename to final key only on success"
+/>
+
+## The strategy: write-then-rename
+
+Workers never write directly to the final S3 key. Instead:
+
+```
+1. Transcode output → write to temp S3 key (e.g. chunk_001.ts.tmp)
+2. Upload completes successfully
+3. Rename (S3 copy + delete) to final key (e.g. chunk_001.ts)
+4. Mark chunk DONE in PostgreSQL
+```
+
+If the worker crashes between steps 1 and 3, the `.tmp` file exists in S3 but the final key does not. The chunk state in PostgreSQL is still `PROCESSING` or `PENDING`. The next worker to pick up the chunk starts fresh — the stale `.tmp` file is overwritten or ignored.
+
+The finalizer only reads files at their final key. It never reads `.tmp` files.
+
+## Why this matters
+
+| Without safe writes | With safe writes |
+|---|---|
+| Crash mid-upload leaves a partial `.ts` file | Crash leaves only a `.tmp` file |
+| Finalizer may assemble a broken playlist | Finalizer only sees complete files |
+| Corrupt stream is served to users | No corrupt output ever reaches users |
+
+> [!NOTE]
+> S3 itself does not have a native atomic rename. The "rename" is implemented as: `CopyObject` to the final key → verify success → `DeleteObject` of the temp key. If `DeleteObject` fails, the `.tmp` file remains but causes no harm.

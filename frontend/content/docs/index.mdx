@@ -1,0 +1,79 @@
+---
+title: Transcode.io Documentation
+description: Documentation for the Transcode.io distributed video transcoding and adaptive HLS streaming platform.
+full: true
+---
+
+import { ArchitectureDiagram } from '@/components/docs/architecture-diagram';
+
+## Platform Overview
+
+**Transcode.io** is a distributed video transcoding and adaptive HLS streaming platform. Upload a video, and the system automatically plans, transcodes, assembles, and delivers multi-resolution adaptive streams — all while you watch progress in real time.
+
+## High-Level Flow
+
+```
+Upload
+  ↓
+Planning       — determine renditions and chunks
+  ↓
+Transcoding    — parallel FFmpeg workers process chunks
+  ↓
+Assembly       — rendition playlists assembled
+  ↓
+Finalization   — master.m3u8 generated
+  ↓
+Streaming      — HLS.js delivers adaptive stream via CloudFront
+```
+
+## Features
+
+<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 my-6">
+  <div className="rounded-xl border border-fd-border bg-fd-card p-5">
+    <div className="text-sky-400 text-xl mb-2">⚡</div>
+    <h3 className="font-semibold mb-1">Distributed Processing</h3>
+    <p className="text-sm text-fd-muted-foreground">Multiple workers process video chunks concurrently. Add workers to scale throughput linearly.</p>
+  </div>
+  <div className="rounded-xl border border-fd-border bg-fd-card p-5">
+    <div className="text-emerald-400 text-xl mb-2">📡</div>
+    <h3 className="font-semibold mb-1">Adaptive HLS</h3>
+    <p className="text-sm text-fd-muted-foreground">Outputs HLS rendition ladders (360p–1440p) with a master playlist for ABR streaming.</p>
+  </div>
+  <div className="rounded-xl border border-fd-border bg-fd-card p-5">
+    <div className="text-amber-400 text-xl mb-2">🛡️</div>
+    <h3 className="font-semibold mb-1">Fault Tolerance</h3>
+    <p className="text-sm text-fd-muted-foreground">Idempotent workers, durable state in PostgreSQL, and safe file writes prevent data corruption.</p>
+  </div>
+  <div className="rounded-xl border border-fd-border bg-fd-card p-5">
+    <div className="text-violet-400 text-xl mb-2">↩️</div>
+    <h3 className="font-semibold mb-1">Cancel & Resume</h3>
+    <p className="text-sm text-fd-muted-foreground">Cancel at any point and resume later. Completed work is preserved; only missing work is retried.</p>
+  </div>
+  <div className="rounded-xl border border-fd-border bg-fd-card p-5">
+    <div className="text-orange-400 text-xl mb-2">☁️</div>
+    <h3 className="font-semibold mb-1">S3 / CloudFront Delivery</h3>
+    <p className="text-sm text-fd-muted-foreground">Source and processed assets stored in S3. CloudFront delivers HLS streams with low latency.</p>
+  </div>
+  <div className="rounded-xl border border-fd-border bg-fd-card p-5">
+    <div className="text-sky-400 text-xl mb-2">📊</div>
+    <h3 className="font-semibold mb-1">Realtime Progress</h3>
+    <p className="text-sm text-fd-muted-foreground">Server-sent events push processing state to the browser. No polling required.</p>
+  </div>
+</div>
+
+## Architecture Overview
+
+<ArchitectureDiagram
+  src="/architecture/main.svg"
+  alt="Transcode.io system architecture overview"
+  caption="System architecture — frontend, backend, Kafka pipeline, workers, and storage"
+/>
+
+## Where to Start
+
+- **New here?** → [Getting Started](/docs/getting-started)
+- **Understand the pipeline** → [How It Works](/docs/how-it-works)
+- **Deep dive on components** → [Architecture](/docs/architecture)
+- **Cancellation & resume** → [Cancellation & Recovery](/docs/cancellation-recovery)
+- **Reliability guarantees** → [Reliability](/docs/reliability)
+- **Quick reference** → [Reference](/docs/reference)

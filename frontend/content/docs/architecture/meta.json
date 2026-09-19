@@ -1,0 +1,4 @@
+{
+  "title": "Architecture",
+  "pages": ["index", "kafka-workers", "database-state", "storage-delivery", "realtime-progress"]
+}

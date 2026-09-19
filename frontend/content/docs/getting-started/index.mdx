@@ -1,0 +1,49 @@
+---
+title: Getting Started
+description: An overview of Transcode.io and what you need to run it.
+---
+
+Transcode.io has four moving parts: a **Next.js frontend**, a **FastAPI backend**, a set of **Python worker processes**, and a **supporting infrastructure** layer (Kafka, PostgreSQL, Redis, S3).
+
+You can run everything locally with a few terminal windows.
+
+## What you need
+
+| Requirement | Purpose |
+|---|---|
+| Node.js ≥ 20 | Frontend dev server |
+| Python ≥ 3.13 | Backend and all workers |
+| Docker + Compose | Kafka broker |
+| PostgreSQL | Durable state (Supabase or local) |
+| Redis | Pub/Sub for cancellation signals |
+| AWS S3 | Source and output storage |
+| FFmpeg | Video transcoding (installed on worker host) |
+
+> [!NOTE]
+> S3 and CloudFront are required even for local development because workers upload and download directly to/from S3. You can use a personal AWS account with minimal cost for testing.
+
+## Quickstart summary
+
+```bash
+# 1. Start infrastructure (Kafka)
+make infra
+
+# 2. Init Kafka topics
+make init-kafka
+
+# 3. Start backend
+make backend
+
+# 4. Start workers (each in its own terminal)
+make planner
+make worker
+make finalizer
+make video-finalizer
+
+# 5. Start frontend
+make frontend
+```
+
+The frontend is available at **http://localhost:3000**.
+
+See [Local Development](/docs/getting-started/local-development) for full setup including environment variables.

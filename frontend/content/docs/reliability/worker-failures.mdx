@@ -1,0 +1,63 @@
+---
+title: Worker Failures
+description: What happens when a transcode worker crashes during processing.
+---
+
+import { ArchitectureDiagram } from '@/components/docs/architecture-diagram';
+
+## Crash & Reconnection Recovery
+
+Workers can crash at any point: mid-download, mid-FFmpeg, or mid-upload. The system is designed to recover without manual intervention.
+
+## Crash during processing
+
+<ArchitectureDiagram
+  src="/architecture/worker_crashes_during_processing.svg"
+  alt="Worker crashes during chunk processing"
+  caption="When a worker crashes mid-job, the chunk remains in PROCESSING state until the Kafka message is redelivered"
+/>
+
+**What happens:**
+
+1. Worker claims chunk (status → `PROCESSING`)
+2. Worker downloads source from S3
+3. Worker starts FFmpeg
+4. **Worker crashes**
+
+The chunk remains in `PROCESSING` state in PostgreSQL. The Kafka message was not committed.
+
+**Recovery:**
+
+Kafka's consumer group timeout triggers and the message is redelivered to another worker (or the same worker when it restarts). The next worker:
+
+1. Receives the chunk message
+2. Sees chunk state is `PROCESSING` — treats this as resumable work
+3. Proceeds to transcode and complete the chunk
+
+> [!NOTE]
+> The chunk status `PROCESSING` does not exclusively mean "a worker is currently working on this." It means "some worker started this but it may or may not have finished." The idempotency check handles both cases.
+
+## Crash after processing, before offset commit
+
+<ArchitectureDiagram
+  src="/architecture/worker_completes_but_crashes_before_offset_commits.svg"
+  alt="Worker completes but crashes before committing Kafka offset"
+  caption="Work is done but Kafka redelivers; idempotency prevents duplicate processing"
+/>
+
+**What happens:**
+
+1. Worker transcodes chunk ✓
+2. Worker uploads to S3 ✓
+3. Worker marks chunk `DONE` in PostgreSQL ✓
+4. **Worker crashes before committing Kafka offset** ✗
+
+**Recovery:**
+
+Kafka redelivers the message. The next worker checks PostgreSQL: chunk is `DONE`. The message is discarded. No duplicate work occurs.
+
+This scenario is safe precisely because of idempotent state checks.
+
+## Worker process restart
+
+If a worker process is restarted (e.g. deployment, manual restart), it simply rejoins its Kafka consumer group and begins consuming from where Kafka knows it left off. In-flight chunks whose offset was never committed will be redelivered.

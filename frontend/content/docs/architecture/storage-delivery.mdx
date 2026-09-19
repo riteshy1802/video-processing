@@ -1,0 +1,41 @@
+---
+title: Storage & Delivery
+description: How S3 and CloudFront store and serve video assets.
+---
+
+## AWS S3
+
+S3 holds all binary assets:
+
+| Path pattern | Content |
+|---|---|
+| `videos/{id}/source.*` | Original uploaded file |
+| `videos/{id}/{res}p/chunk_{n}.ts` | Transcoded HLS segments |
+| `videos/{id}/{res}p/index.m3u8` | Per-rendition playlist |
+| `videos/{id}/master.m3u8` | Master adaptive playlist |
+
+Workers access S3 via boto3. Pre-signed URLs are used for browser-side upload and for passing the source URL directly to FFmpeg.
+
+## CloudFront
+
+CloudFront sits in front of S3 and delivers HLS content to viewers:
+
+```
+Browser → CloudFront → S3
+```
+
+Edge caching means `.ts` segments are served from locations close to the viewer, reducing load times and S3 egress costs.
+
+The `CLOUDFRONT_DOMAIN` environment variable sets the base URL used in playlist files. Without it, content is served directly from S3.
+
+## Pre-signed URLs
+
+Two types of pre-signed URLs are used:
+
+| Purpose | Expiry |
+|---|---|
+| Source upload (`PUT`) | `PRESIGNED_UPLOAD_EXPIRY_SECONDS` (default 900s) |
+| Source download for workers (`GET`) | `PRESIGNED_DOWNLOAD_EXPIRY_SECONDS` (default 900s) |
+
+> [!NOTE]
+> In production, workers should ideally run inside the same AWS region as the S3 bucket to minimize transfer costs and latency.

@@ -1,0 +1,26 @@
+---
+title: Reliability
+description: How Transcode.io handles failures, duplicates, and ensures safe output.
+---
+
+Transcode.io is designed to tolerate common failure modes without corrupting output or requiring manual intervention.
+
+## Reliability principles
+
+| Principle | How it's achieved |
+|---|---|
+| Idempotent workers | PostgreSQL state checks prevent double-processing |
+| Safe output | Temp-file-then-rename strategy avoids partial writes |
+| Cancellation isolation | Cancelling one video doesn't affect other workers |
+| Durable state | PostgreSQL survives worker restarts and Kafka redelivery |
+
+## Topics in this section
+
+- [Idempotency](/docs/reliability/idempotency) — why duplicate Kafka delivery is safe
+- [Worker Failures](/docs/reliability/worker-failures) — what happens when a worker crashes
+- [Transient Failures](/docs/reliability/transient-failures) — network and S3 errors
+- [Permanent Failures](/docs/reliability/permanent-failures) — corrupted or invalid files
+- [Safe File Writes](/docs/reliability/safe-file-writes) — avoiding partial/corrupt output
+
+> [!IMPORTANT]
+> The documentation describes the **current** implementation. Some advanced reliability mechanisms (e.g. distributed lease recovery, full DLQ routing) are not yet implemented. The system is designed to be extended in these directions.

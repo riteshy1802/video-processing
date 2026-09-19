@@ -1,0 +1,68 @@
+---
+title: Adaptive Streaming
+description: How HLS adaptive bitrate streaming works in Transcode.io.
+---
+
+Transcode.io outputs standard HLS (HTTP Live Streaming) content that browsers can play via HLS.js.
+
+## What gets generated
+
+For each video, the pipeline produces:
+
+```
+s3://bucket/videos/{id}/
+  master.m3u8          ← master playlist
+  360p/
+    index.m3u8         ← rendition playlist
+    chunk_000.ts
+    chunk_001.ts
+    ...
+  720p/
+    index.m3u8
+    chunk_000.ts
+    ...
+  1080p/
+    ...
+```
+
+## master.m3u8
+
+The master playlist lists every available rendition:
+
+```
+#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+360p/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+720p/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+1080p/index.m3u8
+```
+
+## Adaptive bitrate (ABR)
+
+HLS.js loads the master playlist and monitors download speed. It starts at a safe quality level, then automatically upgrades to higher quality when bandwidth allows, or drops down when the connection degrades. The user can also manually select a quality level in the player UI.
+
+## CloudFront delivery
+
+In production, processed HLS content is served via CloudFront CDN. CloudFront caches `.ts` segments at edge locations close to the viewer, reducing latency and backend load.
+
+The `CLOUDFRONT_DOMAIN` environment variable controls the base URL used in generated playlist URLs.
+
+> [!NOTE]
+> CloudFront is optional for local development. Without it, content is served directly from S3 using pre-signed URLs.
+
+## Rendition ladder
+
+The default rendition ladder is based on source height:
+
+| Source height | Renditions generated |
+|---|---|
+| ≥ 1440p | 360p, 480p, 720p, 1080p, 1440p |
+| ≥ 1080p | 360p, 480p, 720p, 1080p |
+| ≥ 720p | 360p, 480p, 720p |
+| ≥ 480p | 360p, 480p |
+| ≥ 360p | 360p |
+| < 360p | None (skipped) |
+
+The planner never upscales. It only generates renditions at or below the source resolution.

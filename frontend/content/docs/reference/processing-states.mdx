@@ -1,0 +1,66 @@
+---
+title: Processing States
+description: Database state machine enum values and transitions.
+---
+
+## Video states
+
+| State | Meaning |
+|---|---|
+| `PENDING_UPLOAD` | Record created; source file not yet received |
+| `UPLOADED` | Source file confirmed in S3 |
+| `PROCESSING` | Planner has published chunks; workers are active |
+| `FINALIZING` | All renditions ready; video finalizer running |
+| `READY` | `master.m3u8` available; stream ready to play |
+| `CANCELLING` | User requested cancellation; signals sent |
+| `CANCELLED` | Cancellation complete |
+| `FAILED` | Unrecoverable error; manual inspection required |
+
+---
+
+## Rendition states
+
+| State | Meaning |
+|---|---|
+| `PENDING` | Created by planner; no chunk work started |
+| `PROCESSING` | At least one chunk is active |
+| `READY` | All chunks done; `index.m3u8` uploaded |
+| `CANCELLING` | Cancellation propagating |
+| `CANCELLED` | Skipped due to video cancellation |
+| `FAILED` | Rendition could not be assembled |
+
+---
+
+## Chunk states
+
+| State | Meaning |
+|---|---|
+| `PENDING` | Created by planner; waiting for a worker |
+| `PROCESSING` | A worker is actively transcoding this chunk |
+| `DONE` | `.ts` fragment uploaded to S3 |
+| `CANCELLED` | Skipped due to video cancellation |
+| `FAILED` | FFmpeg or upload error |
+
+---
+
+> [!IMPORTANT]
+> PostgreSQL is the authoritative source of truth. Kafka messages are work requests. Workers always query PostgreSQL state before acting on any Kafka message.
+
+## State transition summary
+
+```
+Video:
+  PENDING_UPLOAD → UPLOADED → PROCESSING → FINALIZING → READY
+                                         ↘ CANCELLING → CANCELLED
+                                         ↘ FAILED
+
+Rendition:
+  PENDING → PROCESSING → READY
+                       ↘ CANCELLED
+                       ↘ FAILED
+
+Chunk:
+  PENDING → PROCESSING → DONE
+                       ↘ CANCELLED
+                       ↘ FAILED
+```

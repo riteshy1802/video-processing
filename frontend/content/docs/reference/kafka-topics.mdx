@@ -1,0 +1,37 @@
+---
+title: Kafka Topics
+description: Reference table for all Kafka topics used in Transcode.io.
+---
+
+| Topic | Producer | Consumer | Purpose |
+|---|---|---|---|
+| `planner.jobs` | Backend API | Planner Worker | Triggers planning for an uploaded video. Message payload: video ID. |
+| `transcode.jobs` | Planner Worker | Transcode Workers | Carries a single chunk job. Message payload: chunk ID. |
+| `finalize.jobs` | Transcode Worker | Rendition Finalizer | Signals that a rendition's chunks are complete. Message payload: rendition ID. |
+| `video.finalize.jobs` | Rendition Finalizer | Video Finalizer | Signals that all renditions are complete. Message payload: video ID. |
+
+## Topic naming note
+
+In the Makefile helper commands, `video.finalize.jobs` is also referred to as `video.finalize.jobs`:
+
+```bash
+make check-topic TOPIC=planner.jobs
+make check-topic TOPIC=transcode.jobs
+make check-topic TOPIC=finalize.jobs
+make check-topic TOPIC=video.finalize.jobs
+```
+
+## Initialize topics
+
+```bash
+make init-kafka   # runs backend/scripts/init_kafka.py
+```
+
+## Produce test messages manually
+
+```bash
+make produce-planner-job IDS="video-id-1"
+make produce-worker-job IDS="chunk-id-1"
+make produce-finalizer-job IDS="rendition-id-1"
+make produce-video-finalizer-job IDS="video-id-1"
+```

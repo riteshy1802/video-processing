@@ -1,0 +1,14 @@
+{
+  "title": "Documentation",
+  "description": "Distributed video transcoding and adaptive HLS streaming platform.",
+  "pages": [
+    "index",
+    "---Introduction---",
+    "getting-started",
+    "how-it-works",
+    "architecture",
+    "cancellation-recovery",
+    "reliability",
+    "reference"
+  ]
+}

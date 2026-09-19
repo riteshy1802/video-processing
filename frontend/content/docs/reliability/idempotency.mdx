@@ -1,0 +1,55 @@
+---
+title: Idempotency
+description: How workers safely handle duplicate Kafka message delivery.
+---
+
+import { ArchitectureDiagram } from '@/components/docs/architecture-diagram';
+
+## Message Processing Guarantees
+
+Kafka provides at-least-once delivery. In practice, this means the same message can be delivered more than once — for example, if a worker crashes after processing a chunk but before committing its Kafka offset.
+
+Workers are designed to be idempotent: processing the same message twice produces the same result as processing it once.
+
+<ArchitectureDiagram
+  src="/architecture/idempotency_mechaism.svg"
+  alt="Idempotency mechanism diagram"
+  caption="Workers check PostgreSQL state before acting; duplicate messages are safely discarded"
+/>
+
+## How idempotency works
+
+Before performing any work on a chunk, a worker checks the chunk's current state in PostgreSQL:
+
+```
+Receive Kafka message (chunk ID)
+    ↓
+Query PostgreSQL: what is the chunk state?
+    │
+    ├── DONE → skip, commit offset, done
+    ├── CANCELLED → skip, commit offset, done
+    ├── FAILED → skip or retry depending on policy
+    └── PENDING or PROCESSING → proceed with transcoding
+```
+
+A chunk that is already `DONE` will never be transcoded a second time, even if the Kafka message is redelivered.
+
+## Why this matters in practice
+
+**Scenario:** A transcode worker:
+1. Downloads source and transcodes the chunk ✓
+2. Uploads output to S3 ✓
+3. Marks chunk `DONE` in PostgreSQL ✓
+4. Crashes before committing Kafka offset ✗
+
+Kafka redelivers the message. The next worker to receive it queries PostgreSQL, sees `DONE`, and discards the message. No duplicate work occurs.
+
+> [!NOTE]
+> Idempotency is enforced at the PostgreSQL level, not at the Kafka level. This makes the implementation simple and robust to infrastructure restarts.
+
+## Rendition and video finalization
+
+The same principle applies to rendition assembly and video finalization:
+
+- Rendition Finalizer checks if rendition is already `READY` before assembling
+- Video Finalizer checks if video is already `READY` before generating master playlist

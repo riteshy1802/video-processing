@@ -1,0 +1,50 @@
+---
+title: Permanent Failures
+description: How Transcode.io handles corrupted or unprocessable video files.
+---
+
+import { ArchitectureDiagram } from '@/components/docs/architecture-diagram';
+
+## Non-Retryable Error Handling
+
+Some failures cannot be resolved by retrying — the source file itself is the problem.
+
+<ArchitectureDiagram
+  src="/architecture/permanent_failure_corrupted_invalid_file.svg"
+  alt="Permanent failure — corrupted or invalid video file"
+  caption="Corrupted or unsupported files are marked FAILED without retrying"
+/>
+
+## Examples
+
+| Failure | Reason |
+|---|---|
+| Corrupted video file | FFmpeg cannot decode the source |
+| Unsupported codec | No FFmpeg decoder available |
+| Truncated file | Source upload was incomplete |
+| Zero-length segment | Time range produced no output |
+| Invalid container | File extension does not match content |
+
+## What happens
+
+When a worker encounters a permanent error:
+
+1. The chunk (or rendition) is marked `FAILED` in PostgreSQL
+2. The Kafka offset is committed — the message is **not** redelivered
+3. Depending on the failure scope, the video may be marked `FAILED` as well
+
+Unlike transient errors, permanent failures are not retried automatically. The user must investigate the source file.
+
+> [!WARNING]
+> A video marked `FAILED` can still be resumed if the underlying issue is resolved (e.g. re-uploading a corrected source). However, if the source file itself is corrupted in S3, re-uploading is required.
+
+## Distinguishing permanent from transient
+
+Workers determine failure type based on:
+
+- **FFmpeg exit code** — non-zero with a codec/format error → permanent
+- **S3 HTTP status** — 403 Forbidden (permanent) vs 503 Service Unavailable (transient)
+- **Exception type** — Python exception classification
+
+> [!NOTE]
+> The error classification is conservative. If the worker cannot confidently determine that an error is permanent, it defaults to treating it as transient (no `FAILED` mark, no offset commit).

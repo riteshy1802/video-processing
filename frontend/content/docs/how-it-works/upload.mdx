@@ -1,0 +1,40 @@
+---
+title: Upload
+description: How the browser uploads video source files to S3.
+---
+
+The upload flow is designed to avoid routing large files through the backend server.
+
+## Flow
+
+```
+Browser → Backend: "I want to upload a file"
+Backend → S3: Generate pre-signed upload URL
+Backend → Browser: Return pre-signed URL + video ID
+Browser → S3: PUT file directly (using pre-signed URL)
+Browser → Backend: "Upload complete"
+Backend → Kafka: Publish to planner.jobs
+```
+
+## Pre-signed URLs
+
+The backend generates a time-limited S3 pre-signed URL using boto3. The browser uses this URL to `PUT` the file directly to S3. The backend never receives the binary data.
+
+Expiry is configured via:
+
+```bash
+PRESIGNED_UPLOAD_EXPIRY_SECONDS=900   # 15 minutes
+```
+
+## After upload completes
+
+Once the browser confirms the upload is done, the backend:
+
+1. Updates the video record status: `UPLOADING` → `UPLOADED`
+2. Publishes the video ID to the `planner.jobs` Kafka topic
+3. Status immediately transitions to `PROCESSING`
+
+The frontend shows realtime progress updates from this point via Server-Sent Events.
+
+> [!NOTE]
+> If the browser closes mid-upload, the video record will remain in `UPLOADING` state. No processing will begin until a successful upload confirmation is received.

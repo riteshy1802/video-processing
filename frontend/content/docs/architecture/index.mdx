@@ -1,0 +1,55 @@
+---
+title: Architecture
+description: Overview of all components in the Transcode.io platform.
+---
+
+import { ArchitectureDiagram } from '@/components/docs/architecture-diagram';
+
+## System Overview
+
+Transcode.io is composed of five distinct layers that work together.
+
+### Overview
+
+<ArchitectureDiagram
+  src="/architecture/overview.png"
+  alt="Transcode.io full system architecture"
+  caption="Full system — frontend, backend API, message bus, workers, and storage"
+/>
+
+### Detail architecture
+
+<ArchitectureDiagram
+  src="/architecture/main.svg"
+  alt="Transcode.io full system architecture"
+  caption="Full system — frontend, backend API, message bus, workers, and storage"
+/>
+
+## Components at a glance
+
+### Frontend
+- **Next.js** — serves the web UI, video player, upload page, and this documentation
+- **HLS.js** — plays adaptive HLS streams in the browser
+- **Server-Sent Events** — receives realtime progress updates from the backend
+
+### Backend API
+- **FastAPI** (Python) — handles upload lifecycle, manages video records, streams SSE events
+- **PostgreSQL** — single source of truth for all video, rendition, and chunk state
+- **Redis** — Pub/Sub channel used to broadcast cancellation signals to workers instantly
+
+### Message Bus
+- **Apache Kafka** — four topics carry work through the pipeline; provides durable, ordered delivery and consumer group load balancing
+
+### Workers (Python processes)
+- **Planner Worker** — inspects video, plans renditions and chunks, publishes work
+- **Transcode Workers** — run FFmpeg on each chunk in parallel
+- **Rendition Finalizer** — assembles per-resolution playlists
+- **Video Finalizer** — generates the master playlist, marks video ready
+
+### Storage & Delivery
+- **AWS S3** — stores source uploads and all processed HLS output
+- **CloudFront** — CDN for low-latency HLS delivery to viewers
+
+---
+
+Each component is documented in detail in the following pages.

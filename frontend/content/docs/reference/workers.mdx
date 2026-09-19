@@ -1,0 +1,42 @@
+---
+title: Workers
+description: Reference for all worker processes in the Transcode.io pipeline.
+---
+
+| Worker | Consumes | Publishes | Start command |
+|---|---|---|---|
+| Planner Worker | `planner.jobs` | `transcode.jobs` | `make planner` |
+| Transcode Worker | `transcode.jobs` | `finalize.jobs` | `make worker` |
+| Rendition Finalizer | `finalize.jobs` | `video.finalize.jobs` | `make finalizer` |
+| Video Finalizer | `video.finalize.jobs` | — | `make video-finalizer` |
+
+## Scaling
+
+The **Transcode Worker** is the only stateless, horizontally scalable worker. Run multiple instances to process chunks in parallel:
+
+```bash
+# Each in a separate terminal
+make worker
+make worker
+make worker
+```
+
+Planner, Rendition Finalizer, and Video Finalizer can also run multiple instances for redundancy, but the per-video throughput benefit is minimal for those stages.
+
+## Worker module paths
+
+| Worker | Python module |
+|---|---|
+| Planner | `planner.main` |
+| Transcode | `worker.main` |
+| Rendition Finalizer | `finalizer.main` |
+| Video Finalizer | `video_finalizer.main` |
+
+Run directly with:
+
+```bash
+cd backend && .venv/bin/python -m planner.main
+cd backend && .venv/bin/python -m worker.main
+cd backend && .venv/bin/python -m finalizer.main
+cd backend && .venv/bin/python -m video_finalizer.main
+```

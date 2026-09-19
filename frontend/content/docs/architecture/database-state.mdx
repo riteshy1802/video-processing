@@ -1,0 +1,73 @@
+---
+title: Database State
+description: How PostgreSQL models video, rendition, and chunk state in Transcode.io.
+---
+
+import { ArchitectureDiagram } from '@/components/docs/architecture-diagram';
+
+## State Models & Schema
+
+PostgreSQL is the single source of truth for all processing state. Workers always consult the database before performing any action.
+
+<ArchitectureDiagram
+  src="/architecture/final_states_in_db.svg"
+  alt="Final processing states stored in PostgreSQL"
+  caption="State transitions for Video, Rendition, and Chunk records in PostgreSQL"
+/>
+
+## Three levels of state
+
+### Video
+
+Represents the top-level upload. A video progresses through:
+
+| State | Meaning |
+|---|---|
+| `PENDING_UPLOAD` | Record created, waiting for source file |
+| `UPLOADED` | Source file received in S3 |
+| `PROCESSING` | Planner has published chunk work |
+| `FINALIZING` | All renditions ready; video finalizer running |
+| `READY` | `master.m3u8` generated; stream available |
+| `CANCELLING` | User requested cancellation |
+| `CANCELLED` | Cancellation complete |
+| `FAILED` | Unrecoverable error |
+
+---
+
+### Rendition
+
+One rendition record per quality level (e.g. `720p`, `1080p`):
+
+| State | Meaning |
+|---|---|
+| `PENDING` | Created by planner, no work started |
+| `PROCESSING` | At least one chunk is active |
+| `READY` | All chunks done; playlist assembled |
+| `CANCELLING` | Cancellation in progress |
+| `CANCELLED` | Skipped due to video cancellation |
+| `FAILED` | Rendition could not be completed |
+
+---
+
+### Chunk
+
+One chunk record per time segment per rendition:
+
+| State | Meaning |
+|---|---|
+| `PENDING` | Created by planner, waiting for a worker |
+| `PROCESSING` | A worker is running FFmpeg |
+| `DONE` | Output uploaded to S3 |
+| `CANCELLED` | Skipped due to video cancellation |
+| `FAILED` | FFmpeg or upload error |
+
+> [!IMPORTANT]
+> PostgreSQL state is the authoritative record. Kafka messages are work *requests* — not commands. A worker that receives a Kafka message for a chunk that is already `DONE` or `CANCELLED` will simply skip it.
+
+## Why three levels?
+
+**Video** state gives the user a simple status at the top level.
+
+**Rendition** state enables per-resolution tracking. If one rendition fails, others can still complete.
+
+**Chunk** state enables fine-grained parallel progress and recovery. If a worker crashes mid-chunk, that chunk's state remains `PROCESSING` and can be replayed when the Kafka message is redelivered.

@@ -1,0 +1,76 @@
+---
+title: Processing Pipeline
+description: How the Kafka-based worker pipeline transcodes video chunks in parallel.
+---
+
+import { ArchitectureDiagram } from '@/components/docs/architecture-diagram';
+
+## Workflow Architecture
+
+The processing pipeline is a four-stage Kafka-driven workflow. Each stage is handled by a dedicated worker type.
+
+## Kafka topic chain
+
+```
+planner.jobs
+    ↓ (Planner Worker)
+transcode.jobs
+    ↓ (Transcode Workers — many in parallel)
+finalize.jobs
+    ↓ (Rendition Finalizer)
+video.finalize.jobs
+    ↓ (Video Finalizer)
+```
+
+<ArchitectureDiagram
+  src="/architecture/worker_distributed_processing.svg"
+  alt="Distributed worker processing diagram"
+  caption="Multiple transcode workers process chunks concurrently from the same Kafka topic"
+/>
+
+## Planner
+
+The Planner Worker receives a video ID and does all the planning work:
+
+- Reads video metadata (resolution, duration)
+- Determines which rendition sizes are appropriate for this source
+- Calculates time-range chunks for parallel processing
+- Creates `Rendition` and `Chunk` records in PostgreSQL
+- Publishes one transcode job per chunk to `transcode.jobs`
+
+> [!NOTE]
+> The planner skips renditions that are larger than the source. A 270p source will not produce a 1080p rendition.
+
+## Transcode Workers
+
+Any number of transcode workers can run simultaneously. They all consume from the same `transcode.jobs` topic. Kafka's consumer group semantics ensure each chunk is processed by exactly one worker.
+
+For each chunk, the worker:
+
+1. Claims the chunk (status → `PROCESSING`)
+2. Downloads the time range from S3 (using FFmpeg's `-ss` / `-t` flags against the S3 pre-signed URL)
+3. Transcodes to HLS `.ts` fragments at the target resolution
+4. Uploads fragment files to S3
+5. Marks chunk `DONE`
+6. Checks if all chunks for the rendition are done; if so, publishes to `finalize.jobs`
+
+## Rendition Finalizer
+
+The Rendition Finalizer:
+
+1. Verifies all chunks for the rendition are `DONE`
+2. Assembles the `index.m3u8` playlist for that rendition
+3. Uploads the playlist to S3
+4. Marks the rendition `READY`
+5. If all renditions for the video are ready, publishes to `video.finalize.jobs`
+
+## Video Finalizer
+
+The Video Finalizer:
+
+1. Verifies all renditions are `READY`
+2. Generates `master.m3u8` — the HLS master playlist that lists all renditions with their bandwidth and resolution
+3. Uploads the master playlist to S3
+4. Marks the video `READY`
+
+At this point the video is fully processed and available for streaming.

@@ -1,0 +1,138 @@
+---
+title: Local Development
+description: Full instructions for running Transcode.io locally.
+---
+
+## 1. Clone and install dependencies
+
+```bash
+git clone <repo-url>
+cd video-processing
+
+# Install backend Python dependencies
+make install
+```
+
+## 2. Configure the backend
+
+Copy the example env file and fill in your values:
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+Key variables:
+
+```bash
+# PostgreSQL connection (Supabase pooler URL or local)
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
+
+# AWS
+AWS_REGION=us-east-1
+S3_BUCKET_NAME=your-s3-bucket
+
+# Optional: provide explicit keys for local dev (omit in production to use IAM role)
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+
+# Pre-signed URL expiry (seconds)
+PRESIGNED_UPLOAD_EXPIRY_SECONDS=900
+PRESIGNED_DOWNLOAD_EXPIRY_SECONDS=900
+
+# CORS
+FRONTEND_ORIGIN=http://localhost:3000
+
+# CloudFront (optional for Phase 1)
+CLOUDFRONT_DOMAIN=
+```
+
+> [!CAUTION]
+> Never commit real AWS credentials to source control. Use IAM roles in production.
+
+## 3. Configure the frontend
+
+```bash
+cp frontend/.env.local.example frontend/.env.local
+```
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=http://localhost:7500
+NEXT_PUBLIC_API_URL=http://localhost:7500
+```
+
+## 4. Run database migrations
+
+```bash
+make migrate
+```
+
+This runs Alembic migrations against your `DATABASE_URL`.
+
+## 5. Start Kafka infrastructure
+
+```bash
+make infra        # docker compose up -d
+make init-kafka   # create topics
+```
+
+The Kafka UI dashboard is available at **http://localhost:8080**.
+
+```bash
+make dashboard    # opens browser to Kafka UI
+```
+
+## 6. Start the backend
+
+```bash
+make backend      # FastAPI on http://localhost:7500
+```
+
+## 7. Start workers
+
+Open a separate terminal for each:
+
+```bash
+make planner        # Planner Worker
+make worker         # Transcode Worker
+make finalizer      # Rendition Finalizer
+make video-finalizer # Video Finalizer
+```
+
+You can run **multiple transcode workers** simultaneously to increase parallelism:
+
+```bash
+# Terminal A
+make worker
+
+# Terminal B
+make worker
+```
+
+## 8. Start the frontend
+
+```bash
+make frontend     # Next.js on http://localhost:3000
+```
+
+## Full cluster shortcut
+
+```bash
+make start-all
+```
+
+Launches 1 frontend, 1 backend, 2 planners, 3 workers, 2 rendition finalizers, and 2 video finalizers, each in a separate terminal window.
+
+## Checking topics
+
+```bash
+make check-topic TOPIC=planner.jobs
+make check-topic TOPIC=transcode.jobs
+make check-topic TOPIC=finalize.jobs
+make check-topic TOPIC=video.finalize.jobs
+```
+
+## Running tests
+
+```bash
+make test   # pytest backend test suite
+```

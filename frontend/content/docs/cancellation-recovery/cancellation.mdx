@@ -1,0 +1,61 @@
+---
+title: Cancellation
+description: How cancellation propagates through the Transcode.io pipeline without shutting down workers.
+---
+
+Cancelling a video stops all active work for that video. Other videos continue processing normally. Workers are not restarted.
+
+## The cancellation flow
+
+```
+User clicks "Cancel Processing"
+        ↓
+Backend: Video → CANCELLING
+        ↓
+Backend: Publish cancellation signal to Redis
+        ↓
+Active workers receive Redis signal
+        ↓
+Worker terminates active FFmpeg process for that video
+        ↓
+Remaining PENDING chunks → CANCELLED
+Remaining PENDING renditions → CANCELLED
+        ↓
+Video → CANCELLED
+```
+
+## Three layers of cancellation
+
+### 1. PostgreSQL — durable state
+
+The video record transitions to `CANCELLING` immediately when the user requests cancellation. This is the authoritative signal.
+
+Any worker that picks up a new chunk job for a `CANCELLING` or `CANCELLED` video will check the video's state in PostgreSQL before starting work and skip the job.
+
+### 2. Redis — immediate notification
+
+For workers already mid-job (FFmpeg is running), PostgreSQL alone is too slow — the worker isn't polling the DB every millisecond. Redis Pub/Sub delivers a cancellation signal instantly.
+
+Workers subscribe to per-video Redis channels. On receiving a cancellation signal, the worker terminates the FFmpeg subprocess and marks the chunk `CANCELLED`.
+
+### 3. Kafka — messages may still exist
+
+Kafka messages for chunks of a cancelled video may still exist in the topic. Workers handle this safely: before processing any chunk, a worker checks the current video state. If the video is `CANCELLED`, the message is acknowledged without doing any work.
+
+> [!NOTE]
+> Cancelling one video does **not** shut down or restart worker processes. Workers continue consuming and processing other videos without interruption.
+
+## What is preserved
+
+When a video is cancelled:
+
+- `DONE` chunks **remain** `DONE`
+- `READY` renditions **remain** `READY`
+- The source file in S3 is **not deleted**
+- Already-uploaded output fragments remain in S3
+
+This means a subsequent **Resume** only needs to redo the work that was not yet completed.
+
+## What the user sees
+
+The video card shows `CANCELLED` status. The detail page shows the cancelled animation. A **Resume Processing** button is available to restart from the earliest incomplete stage.

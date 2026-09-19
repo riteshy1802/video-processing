@@ -1,0 +1,19 @@
+---
+title: Cancellation & Recovery
+description: Overview of how Transcode.io handles video cancellation and resume.
+---
+
+Two of Transcode.io's most important operational features are:
+
+1. **Cancellation** — stop processing at any point without data loss
+2. **Resume** — continue from exactly where you left off
+
+Both are built on PostgreSQL as durable state and Redis for immediate signalling.
+
+## Why it matters
+
+A video may be processing for several minutes. If the user decides they uploaded the wrong file, or wants to stop and re-upload, they should not have to wait for the entire pipeline to finish. Similarly, if a worker crashes or the system is restarted mid-job, completed work should not be thrown away.
+
+- [How cancellation works →](/docs/cancellation-recovery/cancellation)
+- [How resume works →](/docs/cancellation-recovery/resume-processing)
+- [Pipeline reconciliation logic →](/docs/cancellation-recovery/pipeline-reconciliation)

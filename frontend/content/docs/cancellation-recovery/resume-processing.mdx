@@ -1,0 +1,65 @@
+---
+title: Resume Processing
+description: How Transcode.io resumes from the earliest incomplete stage, preserving all completed work.
+---
+
+> **Resume does not restart the entire pipeline.** It inspects the durable processing state in PostgreSQL and continues from the earliest missing stage.
+
+This is a key architectural property. If a video had 200 chunks and 180 were already `DONE` before cancellation, resuming only reprocesses the 20 incomplete chunks — not all 200.
+
+## What triggers a resume
+
+The user clicks **Resume Processing** on a `CANCELLED` or `FAILED` video.
+
+The backend:
+1. Resets the video to `PROCESSING`
+2. Inspects the current state of renditions and chunks
+3. Publishes only the work that is actually missing
+
+## State-based reconciliation
+
+The resume logic uses PostgreSQL state as its decision tree:
+
+```
+Resume
+   ↓
+Inspect PostgreSQL
+   ↓
+Do renditions exist?
+   │
+   ├── NO → publish to planner.jobs (start from scratch)
+   │
+   └── YES → inspect each rendition
+               │
+               ├── Rendition READY → nothing to do
+               │
+               ├── Rendition has incomplete (PENDING/CANCELLED) chunks
+               │     → publish transcode.jobs for those chunks only
+               │
+               └── All chunks DONE but rendition not READY
+                     → publish to finalize.jobs
+
+After checking all renditions:
+   │
+   └── All renditions READY but video not READY
+         → publish to video.finalize.jobs
+```
+
+## What is preserved
+
+| State | Action on resume |
+|---|---|
+| `DONE` chunk | Left as-is. No retranscode. |
+| `READY` rendition | Left as-is. No reassembly. |
+| `PENDING` or `CANCELLED` chunk | Republished to `transcode.jobs` |
+| `PENDING` or `CANCELLED` rendition | Included in reconciliation |
+| Video `CANCELLED` | Reset to `PROCESSING` |
+
+> [!IMPORTANT]
+> Work is never duplicated on resume. Idempotent state checks ensure that a `DONE` chunk cannot become `DONE` twice.
+
+## Why this design?
+
+A naive implementation would delete all state and re-run the full pipeline. This wastes compute and time for large videos.
+
+By using PostgreSQL as the ground truth, resume is precise. Workers receive only the work they still need to do. This also means that a resume is safe to run multiple times — each time it inspects current state and publishes only missing work.

@@ -74,8 +74,6 @@ async def _extract_single_frame(
         "error",
         "-rw_timeout",
         "15000000",
-        "-seekable",
-        "0",
         "-i",
         source_url,
         "-ss",

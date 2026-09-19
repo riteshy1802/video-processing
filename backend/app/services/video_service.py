@@ -446,9 +446,7 @@ class VideoService:
         resumed = True
 
         if planner_required:
-            resumed = await video_repository.resume_cancelled_for_planning(
-                db, video_id
-            )
+            resumed = await video_repository.resume_cancelled_for_planning(db, video_id)
             await db.commit()
         else:
             unfinished_ids = [

@@ -30,7 +30,9 @@ class TranscodeCancelled(Exception):
     This is kept separate from normal FFmpeg failures so the chunk
     becomes CANCELLED instead of FAILED.
     """
+
     pass
+
 
 async def terminate_ffmpeg_process(
     process: asyncio.subprocess.Process,
@@ -67,6 +69,7 @@ async def terminate_ffmpeg_process(
         await process.wait()
 
     logger.info(f"FFmpeg stopped for chunk={chunk_id}")
+
 
 async def fetch_chunk_rendition_video_data(chunk_id: str):
     """
@@ -240,9 +243,7 @@ async def transcode_chunk(
             # Wait for stderr reader to finish now that FFmpeg is dead.
             await stderr_task
 
-            raise TranscodeCancelled(
-                f"Transcoding cancelled for chunk {chunk_id}"
-            )
+            raise TranscodeCancelled(f"Transcoding cancelled for chunk {chunk_id}")
 
         # FFmpeg produced output first.
         # Stop the unused cancellation waiter for this iteration.
@@ -540,7 +541,6 @@ async def main_worker(chunk_id: str, cancel_event: asyncio.Event, active_job: di
     )
 
     try:
-
         async with AsyncSessionLocal() as db:
             claimed = await chunk_repository.claim_for_processing(
                 db=db,
@@ -549,10 +549,7 @@ async def main_worker(chunk_id: str, cancel_event: asyncio.Event, active_job: di
             )
 
         if not claimed:
-            logger.info(
-                f"Skipping chunk={chunk_id}. "
-                "Chunk is no longer PENDING."
-            )
+            logger.info(f"Skipping chunk={chunk_id}. Chunk is no longer PENDING.")
             # Cancellation may have changed this queued chunk to CANCELLED
             # before the worker received it. Re-run the shared, idempotent
             # settlement so the last ineligible Kafka job can complete
@@ -637,14 +634,10 @@ async def main_worker(chunk_id: str, cancel_event: asyncio.Event, active_job: di
                 )
             return
     except TranscodeCancelled:
-        logger.info(
-            f"Chunk {chunk_id} was cancelled while transcoding"
-        )
+        logger.info(f"Chunk {chunk_id} was cancelled while transcoding")
 
         # Remove partial HLS files generated before FFmpeg was stopped.
-        cleanup_chunk_directory(
-            Path(f"/tmp/video-transcoder/{chunk_id}")
-        )
+        cleanup_chunk_directory(Path(f"/tmp/video-transcoder/{chunk_id}"))
         await cancel_and_settle_chunk(
             chunk_id=chunk_id,
             video_id=video_id,

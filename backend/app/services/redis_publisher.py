@@ -77,6 +77,7 @@ async def publish_video_cancelled(video_id: str | uuid.UUID) -> bool:
         },
     )
 
+
 async def publish_video_cancel(video_id: str | uuid.UUID) -> bool:
     """
     Broadcast a video cancellation request to all transcode workers.
@@ -88,9 +89,11 @@ async def publish_video_cancel(video_id: str | uuid.UUID) -> bool:
     try:
         client = get_async_redis_client()
 
-        payload = json.dumps({
-            "video_id": str(video_id),
-        })
+        payload = json.dumps(
+            {
+                "video_id": str(video_id),
+            }
+        )
 
         subscribers = await client.publish(
             "video.cancel",
@@ -106,7 +109,5 @@ async def publish_video_cancel(video_id: str | uuid.UUID) -> bool:
         return True
 
     except Exception as e:
-        logger.warning(
-            f"Failed to publish cancellation for video={video_id}: {e}"
-        )
+        logger.warning(f"Failed to publish cancellation for video={video_id}: {e}")
         return False

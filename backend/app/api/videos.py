@@ -45,11 +45,12 @@ async def complete_upload(
 ) -> CompleteUploadResponse:
     return await video_service.complete_upload(db, video_id)
 
+
 @router.post(
     "/{video_id}/cancel",
     status_code=status.HTTP_200_OK,
     summary="Cancel Video Asset Processing",
-    description="Cancel ongoing processing for a video."
+    description="Cancel ongoing processing for a video.",
 )
 async def cancel_video_processing(
     video_id: uuid.UUID, db: AsyncSession = Depends(get_db)

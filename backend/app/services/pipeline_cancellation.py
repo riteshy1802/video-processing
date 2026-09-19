@@ -19,7 +19,9 @@ async def is_video_cancellation_requested(
     if cancel_event is not None and cancel_event.is_set():
         return True
     try:
-        video_uuid = video_id if isinstance(video_id, uuid.UUID) else uuid.UUID(video_id)
+        video_uuid = (
+            video_id if isinstance(video_id, uuid.UUID) else uuid.UUID(video_id)
+        )
     except (TypeError, ValueError):
         return False
     async with AsyncSessionLocal() as db:

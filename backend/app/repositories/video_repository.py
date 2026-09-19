@@ -175,10 +175,7 @@ class VideoRepository:
         db: AsyncSession,
         video_id: uuid.UUID,
     ) -> str | None:
-        stmt = (
-            select(Video.status)
-            .where(Video.id == video_id)
-        )
+        stmt = select(Video.status).where(Video.id == video_id)
 
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
@@ -195,10 +192,10 @@ class VideoRepository:
 
     async def mark_cancelling(self, db: AsyncSession, video_id: uuid.UUID) -> bool:
         """
-            Atomically transition active pipeline work to CANCELLING.
+        Atomically transition active pipeline work to CANCELLING.
 
-            Returns True if the video was transitioned.
-            Returns False if it was not in an active cancellable state.
+        Returns True if the video was transitioned.
+        Returns False if it was not in an active cancellable state.
         """
         stmt = (
             update(Video)
@@ -240,7 +237,7 @@ class VideoRepository:
         video_id: uuid.UUID,
     ) -> bool:
         """
-            Transition CANCELLING -> CANCELLED after no active chunks remain.
+        Transition CANCELLING -> CANCELLED after no active chunks remain.
         """
         stmt = (
             update(Video)
@@ -311,7 +308,6 @@ class VideoRepository:
         )
         result = await db.execute(stmt)
         return result.rowcount == 1
-
 
 
 video_repository = VideoRepository()

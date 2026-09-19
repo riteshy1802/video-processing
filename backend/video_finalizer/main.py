@@ -32,7 +32,9 @@ async def main_async():
             for _, messages in records.items():
                 for message in messages:
                     payload = message.value
-                    video_id = payload.get("video_id") if isinstance(payload, dict) else None
+                    video_id = (
+                        payload.get("video_id") if isinstance(payload, dict) else None
+                    )
                     if not video_id:
                         logger.error(f"Invalid video finalization message : {payload}")
                         await asyncio.to_thread(consumer.commit)

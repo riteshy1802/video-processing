@@ -249,9 +249,8 @@ async def plan_video_async(
             video.source_frame_rate = await probe_source_frame_rate(video, cancel_event)
 
             await db.refresh(video, attribute_names=["status"])
-            if (
-                video.status in {"CANCELLING", "CANCELLED"}
-                or (cancel_event is not None and cancel_event.is_set())
+            if video.status in {"CANCELLING", "CANCELLED"} or (
+                cancel_event is not None and cancel_event.is_set()
             ):
                 logger.info(
                     "Stopping planner job for video %s before creating work because it was cancelled",
@@ -372,7 +371,9 @@ async def plan_video_async(
                 if worker_producer:
                     published_count = 0
                     for cid in created_chunk_ids:
-                        if await is_video_cancellation_requested(video.id, cancel_event):
+                        if await is_video_cancellation_requested(
+                            video.id, cancel_event
+                        ):
                             logger.info(
                                 "Stopped publishing transcode jobs for cancelled video %s",
                                 video.id,

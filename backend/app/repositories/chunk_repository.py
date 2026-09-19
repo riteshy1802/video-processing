@@ -8,6 +8,7 @@ from app.models.chunk import Chunk
 from app.models.rendition import Rendition
 from app.models.video import Video
 
+
 class ChunkRepository:
     async def get_by_id(self, db: AsyncSession, chunk_id: uuid.UUID) -> Optional[Chunk]:
         """Fetches a chunk by UUID with rendition loaded."""
@@ -83,10 +84,7 @@ class ChunkRepository:
         db: AsyncSession,
         chunk_id: uuid.UUID,
     ) -> str | None:
-        stmt = (
-            select(Chunk.status)
-            .where(Chunk.id == chunk_id)
-        )
+        stmt = select(Chunk.status).where(Chunk.id == chunk_id)
 
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
@@ -146,19 +144,16 @@ class ChunkRepository:
         video_id: uuid.UUID,
     ) -> int:
         """
-            Mark all PENDING chunks belonging to the video as CANCELLED.
+        Mark all PENDING chunks belonging to the video as CANCELLED.
 
-            PROCESSING chunks are left untouched because their FFmpeg
-            processes may still be running.
+        PROCESSING chunks are left untouched because their FFmpeg
+        processes may still be running.
 
-            DONE / FAILED / CANCELLED chunks are also left untouched.
+        DONE / FAILED / CANCELLED chunks are also left untouched.
 
-            Returns the number of chunks cancelled.
+        Returns the number of chunks cancelled.
         """
-        rendition_ids = (
-            select(Rendition.id)
-            .where(Rendition.video_id == video_id)
-        )
+        rendition_ids = select(Rendition.id).where(Rendition.video_id == video_id)
 
         stmt = (
             update(Chunk)
@@ -210,10 +205,10 @@ class ChunkRepository:
         video_id: uuid.UUID,
     ) -> int:
         """
-            Count chunks belonging to this video that are still PROCESSING.
+        Count chunks belonging to this video that are still PROCESSING.
 
-            Used to determine whether all active FFmpeg work has stopped
-            and video cancellation can safely be finalized.
+        Used to determine whether all active FFmpeg work has stopped
+        and video cancellation can safely be finalized.
         """
         stmt = (
             select(func.count(Chunk.id))

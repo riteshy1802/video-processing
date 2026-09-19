@@ -11,6 +11,7 @@ logging.basicConfig(
 logging.getLogger("kafka").setLevel(logging.WARNING)
 logger = logging.getLogger("worker_main")
 
+
 async def main_async():
     consumer = create_worker_consumer()
     logger.info("Worker consumer started. Waiting for jobs...")

@@ -100,12 +100,12 @@ class RenditionRepository:
         video_id: uuid.UUID,
     ) -> int:
         """
-            Mark unfinished renditions as CANCELLING.
+        Mark unfinished renditions as CANCELLING.
 
-            READY renditions remain READY.
-            FAILED/CANCELLED terminal renditions remain unchanged.
+        READY renditions remain READY.
+        FAILED/CANCELLED terminal renditions remain unchanged.
 
-            Return the number of affected renditions.
+        Return the number of affected renditions.
         """
         stmt = (
             update(Rendition)
@@ -131,12 +131,12 @@ class RenditionRepository:
         video_id: uuid.UUID,
     ) -> int:
         """
-            Transition CANCELLING renditions to CANCELLED after
-            all active chunk processing for the video has stopped.
+        Transition CANCELLING renditions to CANCELLED after
+        all active chunk processing for the video has stopped.
 
-            READY / FAILED / already CANCELLED renditions remain unchanged.
+        READY / FAILED / already CANCELLED renditions remain unchanged.
 
-            Returns the number of affected renditions.
+        Returns the number of affected renditions.
         """
 
         stmt = (

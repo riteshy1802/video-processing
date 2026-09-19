@@ -120,7 +120,22 @@ def test_full_upload_lifecycle(mock_delete, mock_get_url, mock_verify, mock_put_
         == "https://test-bucket.s3.amazonaws.com/videos/mock/original/test.mp4?presigned=get"
     )
 
-    # Step 5: Delete video
+    # Step 5: Rename only the PostgreSQL display filename. The original extension
+    # and object key must remain unchanged.
+    rename_res = client.patch(
+        f"/api/videos/{video_id}/name",
+        json={"name": "renamed_video"},
+    )
+    assert rename_res.status_code == 200
+    assert rename_res.json()["original_filename"] == "renamed_video.mp4"
+
+    renamed_detail_res = client.get(f"/api/videos/{video_id}")
+    assert renamed_detail_res.status_code == 200
+    renamed_detail = renamed_detail_res.json()
+    assert renamed_detail["original_filename"] == "renamed_video.mp4"
+    assert renamed_detail["s3_key"] == create_data["s3_key"]
+
+    # Step 6: Delete video
     delete_res = client.delete(f"/api/videos/{video_id}")
     assert delete_res.status_code == 204
 

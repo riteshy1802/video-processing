@@ -138,47 +138,92 @@ export async function uploadFileToS3WithProgress(
   }
 }
 
+export interface VideoPage {
+  videos: Video[];
+  hasMore: boolean;
+  nextOffset: number;
+}
+
+interface ApiRenditionListItem {
+  resolution: number | string;
+  status?: string;
+  processing_time_seconds?: number;
+  processingTime?: number;
+  worker_id?: string;
+}
+
+interface ApiVideoListItem {
+  id: string;
+  original_filename: string;
+  file_size_bytes: number;
+  duration_seconds?: number;
+  source_width?: number;
+  source_height?: number;
+  content_type?: string;
+  status?: string;
+  created_at: string;
+  uploaded_at?: string;
+  playback_url?: string;
+  master_playlist_url?: string;
+  renditions?: ApiRenditionListItem[];
+}
+
+function mapVideoListItem(v: ApiVideoListItem): Video {
+  const statusLower = (v.status || "").toLowerCase();
+  const isReady = statusLower === "ready";
+  const rawRenditions = v.renditions || [];
+  const renditions: Rendition[] = rawRenditions.map((r) => ({
+    resolution: typeof r.resolution === "number" ? `${r.resolution}p` : String(r.resolution).endsWith("p") ? String(r.resolution) : `${r.resolution}p`,
+    status: (r.status || "ready").toLowerCase() as Rendition["status"],
+    processingTime: typeof r.processing_time_seconds === "number" ? Math.round(r.processing_time_seconds) : typeof r.processingTime === "number" ? Math.round(r.processingTime) : undefined,
+    workerId: r.worker_id || `worker-${r.resolution}`,
+  }));
+
+  return {
+    id: v.id,
+    filename: v.original_filename,
+    size: v.file_size_bytes,
+    duration: v.duration_seconds,
+    width: v.source_width,
+    height: v.source_height,
+    mimeType: v.content_type,
+    status: (isReady ? "ready" : statusLower) as Video["status"],
+    createdAt: v.uploaded_at || v.created_at,
+    playbackUrl: v.playback_url || v.master_playlist_url,
+    renditions,
+  };
+}
+
 export const VideoAPI = {
-  async getVideos(): Promise<Video[]> {
-    let apiVideos: Video[] = [];
-    if (API_BASE_URL) {
-      try {
-        const res = await apiClient.get("/api/videos");
-        apiVideos = res.data.map((v: any) => {
-          const statusLower = (v.status || "").toLowerCase();
-          const isReady = statusLower === "ready";
-          const rawRenditions = v.renditions || [];
-          const renditions: Rendition[] = rawRenditions.map((r: any) => ({
-            resolution: typeof r.resolution === "number" ? `${r.resolution}p` : String(r.resolution).endsWith("p") ? String(r.resolution) : `${r.resolution}p`,
-            status: (r.status || "ready").toLowerCase() as any,
-            processingTime: typeof r.processing_time_seconds === "number" ? Math.round(r.processing_time_seconds) : typeof r.processingTime === "number" ? Math.round(r.processingTime) : undefined,
-            workerId: r.worker_id || `worker-${r.resolution}`,
-          }));
-
-          return {
-            id: v.id,
-            filename: v.original_filename,
-            size: v.file_size_bytes,
-            duration: v.duration_seconds,
-            width: v.source_width,
-            height: v.source_height,
-            mimeType: v.content_type,
-            status: (isReady ? "ready" : statusLower) as any,
-            createdAt: v.created_at,
-            playbackUrl: v.playback_url || v.master_playlist_url,
-            renditions,
-          };
-        });
-      } catch (e) {
-        console.warn("FastAPI backend not reachable, using local storage demo dataset", e);
-      }
+  async getVideosPage(limit = 9, offset = 0): Promise<VideoPage> {
+    try {
+      const res = await apiClient.get<ApiVideoListItem[]>("/api/videos", {
+        params: { limit, offset },
+      });
+      const videos = res.data.map(mapVideoListItem);
+      const hasMoreHeader = res.headers["x-has-more"];
+      const nextOffsetHeader = Number(res.headers["x-next-offset"]);
+      return {
+        videos,
+        hasMore: hasMoreHeader === undefined ? videos.length === limit : hasMoreHeader === "true",
+        nextOffset: Number.isFinite(nextOffsetHeader) ? nextOffsetHeader : offset + videos.length,
+      };
+    } catch (error) {
+      console.warn("FastAPI backend not reachable, using local storage demo dataset", error);
+      const storedVideos = getStoredVideos().sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+      const videos = storedVideos.slice(offset, offset + limit);
+      return {
+        videos,
+        hasMore: offset + videos.length < storedVideos.length,
+        nextOffset: offset + videos.length,
+      };
     }
-    
-    // Combine live backend uploaded videos with the 3 demo cards (Big Buck Bunny, etc.)
-    const storedDemos = getStoredVideos();
-    const demoCards = storedDemos.filter(v => v.id.startsWith("vid_demo_"));
+  },
 
-    return [...apiVideos, ...demoCards];
+  async getVideos(): Promise<Video[]> {
+    return (await this.getVideosPage(100, 0)).videos;
   },
 
   async getVideo(id: string): Promise<Video | null> {
@@ -308,6 +353,22 @@ export const VideoAPI = {
       saveStoredVideos(videos);
     }
     return { video_id: videoId, status: "UPLOADED" };
+  },
+
+  async renameVideo(videoId: string, name: string): Promise<string> {
+    if (videoId.startsWith("vid_demo_")) {
+      throw new Error("Demo videos cannot be renamed because they are not stored in PostgreSQL");
+    }
+
+    try {
+      const res = await apiClient.patch(`/api/videos/${videoId}/name`, { name });
+      return res.data.original_filename;
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error)) {
+        throw new Error(error.response?.data?.detail || error.message || "Rename failed");
+      }
+      throw error;
+    }
   },
 
   async deleteVideo(videoId: string): Promise<void> {

@@ -7,6 +7,7 @@ from sqlalchemy import (
     Float,
     DateTime,
     Text,
+    JSON,
     ForeignKey,
     UniqueConstraint,
 )
@@ -62,6 +63,7 @@ class Chunk(Base):
         String(512), nullable=True
     )
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ffmpeg_progress: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now

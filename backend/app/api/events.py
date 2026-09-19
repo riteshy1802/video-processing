@@ -65,7 +65,9 @@ async def build_initial_state_snapshot(db: AsyncSession, video_id: uuid.UUID) ->
                 "resolution": r.resolution,
                 "status": c_status,
                 "progress": round(c_prog, 1),
-                "worker_id": c.worker_id or f"worker-{r.resolution}",
+                "worker_id": c.worker_id,
+                "ffmpeg": c.ffmpeg_progress,
+                "error": c.error_message,
                 "start_seconds": c.start_seconds,
                 "end_seconds": c.end_seconds,
                 "processing_time_seconds": c.processing_time_seconds,
@@ -104,6 +106,7 @@ async def build_initial_state_snapshot(db: AsyncSession, video_id: uuid.UUID) ->
         "filename": video.original_filename,
         "duration_seconds": video.duration_seconds,
         "source_height": video.source_height,
+        "source_frame_rate": video.source_frame_rate,
         "total_renditions": len(rendition_list),
         "total_chunks": len(all_chunks),
         "completed_chunks": sum(
@@ -117,6 +120,24 @@ async def build_initial_state_snapshot(db: AsyncSession, video_id: uuid.UUID) ->
         "renditions": rendition_list,
         "chunks": all_chunks,
     }
+
+
+@router.get(
+    "/{video_id}/processing-state",
+    summary="Current Video Processing State",
+    description="Returns the durable rendition/chunk hierarchy from PostgreSQL.",
+)
+async def get_video_processing_state(
+    video_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    snapshot = await build_initial_state_snapshot(db, video_id)
+    if not snapshot:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Video asset {video_id} not found",
+        )
+    return snapshot
 
 
 @router.get(

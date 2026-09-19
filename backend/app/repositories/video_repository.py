@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, or_
+from sqlalchemy import func, select, update, or_
 from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.models.video import Video
@@ -53,7 +53,10 @@ class VideoRepository:
         stmt = (
             select(Video)
             .options(selectinload(Video.renditions))
-            .order_by(Video.created_at.desc())
+            .order_by(
+                func.coalesce(Video.uploaded_at, Video.created_at).desc(),
+                Video.id.desc(),
+            )
             .limit(limit)
             .offset(offset)
         )
@@ -79,6 +82,15 @@ class VideoRepository:
             video.error_message = error_message
             video.failed_at = datetime.now(timezone.utc)
 
+        await db.commit()
+        await db.refresh(video)
+        return video
+
+    async def update_filename(
+        self, db: AsyncSession, video: Video, filename: str
+    ) -> Video:
+        """Updates only the database display filename; the S3 object key is unchanged."""
+        video.original_filename = filename
         await db.commit()
         await db.refresh(video)
         return video

@@ -1,5 +1,6 @@
 import uuid
 import logging
+import os
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import HTTPException, status
@@ -10,6 +11,8 @@ from app.schemas.video import (
     CreateVideoRequest,
     CreateVideoResponse,
     CompleteUploadResponse,
+    RenameVideoRequest,
+    RenameVideoResponse,
     VideoResponse,
     VideoDetailResponse,
 )
@@ -181,9 +184,14 @@ class VideoService:
             uploaded_at=updated_video.uploaded_at or now,
         )
 
-    async def list_videos(self, db: AsyncSession) -> List[VideoResponse]:
+    async def list_videos(
+        self,
+        db: AsyncSession,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[VideoResponse]:
         """Lists uploaded video assets with playback URLs and rendition metadata."""
-        videos = await video_repository.list_videos(db)
+        videos = await video_repository.list_videos(db, limit=limit, offset=offset)
         result = []
         for v in videos:
             is_ready = (v.status or "").upper() == "READY"
@@ -201,6 +209,7 @@ class VideoService:
                 source_width=v.source_width,
                 source_height=v.source_height,
                 duration_seconds=v.duration_seconds,
+                source_frame_rate=v.source_frame_rate,
                 playback_url=master_url,
                 master_playlist_url=master_url,
                 renditions=renditions_list,
@@ -246,7 +255,39 @@ class VideoService:
             source_width=video.source_width,
             source_height=video.source_height,
             duration_seconds=video.duration_seconds,
+            source_frame_rate=video.source_frame_rate,
             renditions=renditions_list,
+        )
+
+    async def rename_video(
+        self, db: AsyncSession, video_id: uuid.UUID, req: RenameVideoRequest
+    ) -> RenameVideoResponse:
+        """Renames the PostgreSQL display filename while preserving its extension and S3 key."""
+        video = await video_repository.get_by_id(db, video_id)
+        if not video:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Video asset with ID '{video_id}' not found.",
+            )
+
+        _, extension = os.path.splitext(video.original_filename)
+        renamed_filename = f"{req.name}{extension}"
+        if len(renamed_filename) > 255:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Video name is too long. Maximum length is {255 - len(extension)} characters before the extension.",
+            )
+
+        if renamed_filename != video.original_filename:
+            video = await video_repository.update_filename(
+                db=db,
+                video=video,
+                filename=renamed_filename,
+            )
+
+        return RenameVideoResponse(
+            id=video.id,
+            original_filename=video.original_filename,
         )
 
     async def delete_video(self, db: AsyncSession, video_id: uuid.UUID) -> None:

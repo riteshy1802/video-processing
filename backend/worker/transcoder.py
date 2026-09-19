@@ -18,6 +18,20 @@ from worker.producer import publish_finalize_jobs_for_each_rendition
 logger = logging.getLogger("transcoder")
 
 
+def _as_int(value: str | None) -> int | None:
+    try:
+        return int(value) if value is not None and value != "N/A" else None
+    except ValueError:
+        return None
+
+
+def _as_float(value: str | None) -> float | None:
+    try:
+        return float(value) if value is not None and value != "N/A" else None
+    except ValueError:
+        return None
+
+
 async def fetch_chunk_rendition_video_data(chunk_id: str):
     """
     Helps to fetch the chunk data, rendition data, and video data for a given chunk_id
@@ -38,6 +52,7 @@ async def fetch_chunk_rendition_video_data(chunk_id: str):
                 Video.s3_key,
                 Video.original_filename,
                 Rendition.resolution,
+                Video.source_frame_rate,
                 Chunk.start_seconds,
                 Chunk.end_seconds,
                 Chunk.temporary_s3_prefix,
@@ -86,6 +101,7 @@ async def transcode_chunk(
     start_seconds: float,
     end_seconds: float,
     worker_id: str,
+    source_frame_rate: float,
 ):
     duration = end_seconds - start_seconds
     duration_us = max(1.0, duration * 1_000_000)
@@ -97,6 +113,9 @@ async def transcode_chunk(
     command = [
         "ffmpeg",
         "-y",
+        "-nostats",
+        "-stats_period",
+        "0.5",
         "-progress",
         "pipe:1",
         "-ss",
@@ -106,11 +125,13 @@ async def transcode_chunk(
         "-t",
         str(duration),
         "-vf",
-        f"scale=-2:{resolution}",
+        f"scale=-2:{resolution},fps={source_frame_rate:.6f}",
         "-c:v",
         "libx264",
         "-c:a",
         "aac",
+        "-force_key_frames",
+        "expr:gte(t,n_forced*6)",
         "-f",
         "hls",
         "-hls_time",
@@ -135,6 +156,7 @@ async def transcode_chunk(
 
     last_publish_time = 0.0
     last_progress = 0.0
+    ffmpeg_values: dict[str, str] = {}
 
     stderr_chunks = []
 
@@ -152,14 +174,21 @@ async def transcode_chunk(
         if not line_bytes:
             break
         line = line_bytes.decode(errors="replace").strip()
-        if line.startswith("out_time_us="):
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        ffmpeg_values[key] = value
+
+        # FFmpeg terminates each structured progress block with this key.
+        if key == "progress":
             try:
-                out_time_us = float(line.split("=")[1])
+                out_time_us = float(ffmpeg_values.get("out_time_us", "0"))
                 pct = round(min(99.0, max(0.0, (out_time_us / duration_us) * 100.0)), 1)
                 now = time.time()
                 if (
                     now - last_publish_time > 0.5 and pct > last_progress
-                ) or pct >= 99.0:
+                ) or value == "end":
                     last_publish_time = now
                     last_progress = pct
                     await record_chunk_progress(
@@ -170,9 +199,22 @@ async def transcode_chunk(
                         chunk_index=chunk_index,
                         worker_id=worker_id,
                         progress=pct,
+                        ffmpeg_progress={
+                            "frame": _as_int(ffmpeg_values.get("frame")),
+                            "fps": _as_float(ffmpeg_values.get("fps")),
+                            "time": ffmpeg_values.get("out_time"),
+                            "speed": ffmpeg_values.get("speed"),
+                            "bitrate": ffmpeg_values.get("bitrate"),
+                            "total_size": _as_int(ffmpeg_values.get("total_size")),
+                            "dup_frames": _as_int(ffmpeg_values.get("dup_frames")),
+                            "drop_frames": _as_int(ffmpeg_values.get("drop_frames")),
+                            "progress": value,
+                        },
                     )
             except Exception as ex:
                 logger.debug(f"Error parsing FFmpeg progress line '{line}': {ex}")
+            finally:
+                ffmpeg_values = {}
 
     await process.wait()
     await stderr_task
@@ -227,6 +269,7 @@ async def update_chunk_status(
         elif status == "FAILED":
             chunk.status = "FAILED"
             chunk.completed_at = now
+            chunk.error_message = error_msg
         else:
             raise ValueError(f"Invalid chunk status: {status}")
         await db.commit()
@@ -253,6 +296,13 @@ async def update_chunk_status(
             "worker_id": worker_id or socket.gethostname(),
             "status": status,
             "progress": progress_val,
+            "message": (
+                "Worker started FFmpeg for this chunk"
+                if status == "PROCESSING"
+                else "Chunk transcoding and upload completed"
+                if status == "DONE"
+                else "Chunk transcoding failed"
+            ),
         }
         if error_msg:
             payload["error"] = error_msg
@@ -268,6 +318,7 @@ async def record_chunk_progress(
     chunk_index: int,
     worker_id: str,
     progress: float,
+    ffmpeg_progress: dict | None = None,
 ) -> None:
     """Persist and publish a worker's latest chunk progress on the video channel."""
     bounded_progress = round(min(99.0, max(0.0, progress)), 1)
@@ -280,6 +331,8 @@ async def record_chunk_progress(
         # Progress must never move backwards when FFmpeg emits a delayed line.
         chunk.progress_percent = max(chunk.progress_percent or 0.0, bounded_progress)
         chunk.worker_id = worker_id
+        if ffmpeg_progress:
+            chunk.ffmpeg_progress = ffmpeg_progress
         persisted_progress = chunk.progress_percent
         await db.commit()
 
@@ -295,6 +348,8 @@ async def record_chunk_progress(
             "worker_id": worker_id,
             "status": "PROCESSING",
             "progress": persisted_progress,
+            "ffmpeg": ffmpeg_progress,
+            "message": "FFmpeg is transcoding this chunk",
         },
     )
 
@@ -323,6 +378,7 @@ async def main_worker(chunk_id: str):
     resolution = str(result["resolution"])
     chunk_index = int(result["chunk_index"])
     worker_id = socket.gethostname()
+    source_frame_rate = float(result["source_frame_rate"] or 30.0)
 
     # Generate the S3 pre-signed url
     presigned_url = s3_service.generate_presigned_get_url(
@@ -352,6 +408,7 @@ async def main_worker(chunk_id: str):
             start_seconds=result["start_seconds"],
             end_seconds=result["end_seconds"],
             worker_id=worker_id,
+            source_frame_rate=source_frame_rate,
         )
 
         logger.info(f"Transcoded chunk to local directory: {output_dir}")

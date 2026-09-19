@@ -32,18 +32,23 @@ function resolutionLabel(value: unknown): ResolutionType {
 }
 
 function chunkFrom(data: Record<string, unknown>): ChunkProgressState {
-  return {
+  const chunk: ChunkProgressState = {
     chunk_id: String(data.chunk_id),
     chunk_index: Number(data.chunk_index ?? 0),
     rendition_id: String(data.rendition_id ?? ""),
     resolution: resolutionLabel(data.resolution),
-    worker_id: String(data.worker_id ?? "worker-pool"),
+    worker_id: typeof data.worker_id === "string" ? data.worker_id : undefined,
     status: String(data.status ?? "PENDING").toUpperCase() as ChunkProgressState["status"],
     progress: Math.max(0, Math.min(100, Number(data.progress ?? 0))),
     start_seconds: typeof data.start_seconds === "number" ? data.start_seconds : undefined,
     end_seconds: typeof data.end_seconds === "number" ? data.end_seconds : undefined,
     error: typeof data.error === "string" ? data.error : undefined,
+    message: typeof data.message === "string" ? data.message : undefined,
   };
+  if (data.ffmpeg && typeof data.ffmpeg === "object") {
+    chunk.ffmpeg = data.ffmpeg as ChunkProgressState["ffmpeg"];
+  }
+  return chunk;
 }
 
 function aggregateRendition(rendition: RenditionState): RenditionState {
@@ -129,19 +134,32 @@ function applyEvent(previous: VideoProcessingState | null, videoId: string, data
     const renditions = [...next.renditions];
     const rendition = { ...renditions[renditionIndex], chunks: [...renditions[renditionIndex].chunks] };
     const chunk = chunkFrom(data);
-    const chunkIndex = rendition.chunks.findIndex((item) => item.chunk_id === chunk.chunk_id);
-    if (chunkIndex === -1) rendition.chunks.push(chunk);
-    else {
-      const current = rendition.chunks[chunkIndex];
-      // Redis preserves order for a channel, but do not visually move backwards
-      // if an older progress event is delivered during reconnect/re-render.
-      rendition.chunks[chunkIndex] = {
+    
+    // Exact lookup by chunk_id first, fallback to chunk_index
+    let chunkIdx = rendition.chunks.findIndex((item) => item.chunk_id === chunk.chunk_id && chunk.chunk_id !== "undefined");
+    if (chunkIdx === -1 && typeof chunk.chunk_index === "number") {
+      chunkIdx = rendition.chunks.findIndex((item) => item.chunk_index === chunk.chunk_index);
+    }
+
+    if (chunkIdx === -1) {
+      rendition.chunks.push(chunk);
+    } else {
+      const current = rendition.chunks[chunkIdx];
+      rendition.chunks[chunkIdx] = {
         ...current,
         ...chunk,
         progress: Math.max(current.progress, chunk.progress),
+        ffmpeg: chunk.ffmpeg ?? current.ffmpeg,
       };
     }
-    rendition.status = chunk.status === "FAILED" ? "FAILED" : "PROCESSING";
+
+    // Chunk completion means transcoding is done; the rendition is only READY
+    // after its finalizer publishes rendition.ready.
+    rendition.status = chunk.status === "FAILED"
+      ? "FAILED"
+      : rendition.status === "READY"
+        ? "READY"
+        : "PROCESSING";
     renditions[renditionIndex] = rendition;
     next = { ...next, renditions };
   }
@@ -154,6 +172,7 @@ function applyEvent(previous: VideoProcessingState | null, videoId: string, data
     };
     next = { ...next, renditions };
   }
+
   return aggregateVideo(next);
 }
 
@@ -164,6 +183,7 @@ export function useVideoProcessingEvents(videoId: string, options: UseVideoProce
   const [isCompleted, setIsCompleted] = useState(false);
   const [isFailed, setIsFailed] = useState(false);
   const onVideoReadyRef = useRef(onVideoReady);
+  const readyNotifiedRef = useRef(false);
 
   useEffect(() => {
     onVideoReadyRef.current = onVideoReady;
@@ -171,12 +191,12 @@ export function useVideoProcessingEvents(videoId: string, options: UseVideoProce
 
   useEffect(() => {
     if (!videoId || !enabled || videoId.startsWith("vid_demo_")) return;
-    const source = new EventSource(`${API_BASE_URL}/api/videos/${videoId}/events`);
-    source.onopen = () => setIsConnected(true);
-    source.onmessage = (event) => {
+    readyNotifiedRef.current = false;
+    let cancelled = false;
+    let source: EventSource | null = null;
+
+    const handlePayload = (data: Record<string, unknown>) => {
       try {
-        if (!event.data) return;
-        const data = JSON.parse(event.data) as Record<string, unknown>;
         if (data.type === "ping" || data.type === "keepalive") return;
         const isSnapshot = data.type === "initial.state" || data.type === "snapshot";
         const snapshot = data.type === "snapshot" ? data.snapshot as Record<string, unknown> : data;
@@ -188,7 +208,10 @@ export function useVideoProcessingEvents(videoId: string, options: UseVideoProce
           videoStatus === "READY";
         if (data.type === "video.ready" || isTerminalSnapshot) {
           setIsCompleted(true);
-          onVideoReadyRef.current?.();
+          if (!readyNotifiedRef.current) {
+            readyNotifiedRef.current = true;
+            onVideoReadyRef.current?.();
+          }
         } else if (data.type === "video.failed" || videoStatus === "FAILED") {
           setIsFailed(true);
         }
@@ -196,9 +219,38 @@ export function useVideoProcessingEvents(videoId: string, options: UseVideoProce
         console.error("Error parsing SSE message:", error);
       }
     };
-    source.onerror = () => setIsConnected(false);
+
+    const connect = async () => {
+      // PostgreSQL snapshot first; Redis/SSE only supplies subsequent live changes.
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/videos/${videoId}/processing-state`, {
+          cache: "no-store",
+        });
+        if (response.ok && !cancelled) {
+          handlePayload(await response.json() as Record<string, unknown>);
+        }
+      } catch (error) {
+        console.error("Error loading processing snapshot:", error);
+      }
+
+      if (cancelled) return;
+      source = new EventSource(`${API_BASE_URL}/api/videos/${videoId}/events`);
+      source.onopen = () => setIsConnected(true);
+      source.onmessage = (event) => {
+        if (!event.data) return;
+        try {
+          handlePayload(JSON.parse(event.data) as Record<string, unknown>);
+        } catch (error) {
+          console.error("Error parsing SSE message:", error);
+        }
+      };
+      source.onerror = () => setIsConnected(false);
+    };
+
+    void connect();
     return () => {
-      source.close();
+      cancelled = true;
+      source?.close();
       setIsConnected(false);
     };
   }, [videoId, enabled]);

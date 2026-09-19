@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import uuid
 import asyncio
+import json
 import logging
 from app.config import settings
 from app.database import AsyncSessionLocal
@@ -8,10 +9,109 @@ from app.repositories.video_repository import video_repository
 from app.repositories.rendition_repository import rendition_repository
 from app.models.rendition import Rendition
 from app.models.chunk import Chunk
+from app.services.s3 import s3_service
 from worker.producer import get_worker_producer, publish_chunk
 
 logger = logging.getLogger("planner")
 AVAILABLE_RENDITIONS = settings.SUPPORTED_RENDITIONS
+
+
+FPS_PROBE_TIMEOUT_SECONDS = 8.0
+
+
+def select_source_frame_rate(
+    payload: dict,
+    packet_duration_seconds: float | None = None,
+) -> float:
+    """Choose metadata FPS when sane, otherwise derive average FPS from packets."""
+    streams = payload.get("streams") or []
+    stream = streams[0] if streams else {}
+
+    def parse_rate(value: str | None) -> float:
+        try:
+            if not value or value == "0/0":
+                return 0.0
+            numerator, denominator = value.split("/", 1)
+            return float(numerator) / float(denominator)
+        except (ValueError, ZeroDivisionError):
+            return 0.0
+
+    average_rate = parse_rate(stream.get("avg_frame_rate"))
+    if 1.0 <= average_rate <= 240.0:
+        return average_rate
+
+    duration = packet_duration_seconds or float(
+        (payload.get("format") or {}).get("duration") or 0
+    )
+    packet_count = int(stream.get("nb_read_packets") or 0)
+    derived_rate = packet_count / duration if duration > 0 else 0.0
+    if 1.0 <= derived_rate <= 240.0:
+        # VFR sources have no single exact rate. A milliframe precision value
+        # preserves their average cadence consistently across all renditions.
+        return round(derived_rate, 3)
+
+    nominal_rate = parse_rate(stream.get("r_frame_rate"))
+    return nominal_rate if 1.0 <= nominal_rate <= 240.0 else 30.0
+
+
+async def probe_source_frame_rate(video) -> float:
+    """Return a sane source FPS, deriving it from packets for malformed VFR WebM."""
+    input_url = s3_service.generate_presigned_get_url(
+        s3_key=video.s3_key,
+        expires_in=settings.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
+        response_filename=video.original_filename,
+    )
+    logger.info(
+        "Probing source FPS metadata for video %s",
+        video.id,
+    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=avg_frame_rate,r_frame_rate",
+            "-of",
+            "json",
+            input_url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as ex:
+        logger.warning("Could not start FFprobe for FPS detection: %s", ex)
+        return 30.0
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=FPS_PROBE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.communicate()
+        logger.warning(
+            "FFprobe FPS detection timed out after %.1f seconds for video %s; using 30 fps",
+            FPS_PROBE_TIMEOUT_SECONDS,
+            video.id,
+        )
+        return 30.0
+    if process.returncode != 0:
+        logger.warning(
+            "FFprobe FPS detection failed: %s", stderr.decode(errors="replace")
+        )
+        return 30.0
+
+    try:
+        frame_rate = select_source_frame_rate(json.loads(stdout.decode()))
+        logger.info(
+            "Detected source frame rate %.3f fps for video %s", frame_rate, video.id
+        )
+        return frame_rate
+    except (ValueError, TypeError, json.JSONDecodeError) as ex:
+        logger.warning("Could not parse FFprobe FPS output: %s", ex)
+        return 30.0
 
 
 def determine_renditions(source_height: int) -> list[int]:
@@ -103,8 +203,11 @@ async def plan_video_async(video_id: str) -> bool:
 
             chunk_ranges = determine_chunks(video.duration_seconds)
 
+            video.source_frame_rate = await probe_source_frame_rate(video)
+
             logger.info(
-                f"Planning video {video.id}: duration={video.duration_seconds:.2f}s, source={video.source_height}p | "
+                f"Planning video {video.id}: duration={video.duration_seconds:.2f}s, "
+                f"source={video.source_height}p @ {video.source_frame_rate:.3f} fps | "
                 f"Target Renditions={resolutions} | Chunks per rendition={len(chunk_ranges)}"
             )
 
@@ -177,6 +280,7 @@ async def plan_video_async(video_id: str) -> bool:
                     "resolutions": resolutions,
                     "chunks_count": len(chunk_ranges),
                     "duration_seconds": video.duration_seconds,
+                    "source_frame_rate": video.source_frame_rate,
                 },
             )
 

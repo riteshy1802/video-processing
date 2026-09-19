@@ -1,7 +1,9 @@
 "use client";
 
+import { useState, type FormEvent, type MouseEvent } from "react";
 import Link from "next/link";
 import { Video } from "@/types/video";
+import { VideoAPI } from "@/lib/api/videos";
 import { VideoStatusBadge } from "./video-status-badge";
 import { 
   formatBytes, 
@@ -9,27 +11,79 @@ import {
   formatDate, 
   getResolutionLabel 
 } from "@/lib/utils";
-import { Film, HardDrive, Clock, Play, Sparkles } from "lucide-react";
+import { Film, HardDrive, Clock, Play, Sparkles, Pencil, Check, X } from "lucide-react";
+import { toast } from "sonner";
 
 interface VideoCardProps {
   video: Video;
+  onRenamed?: (videoId: string, filename: string) => void;
 }
 
-export function VideoCard({ video }: VideoCardProps) {
+function splitFilename(filename: string): { name: string; extension: string } {
+  const lastDot = filename.lastIndexOf(".");
+  if (lastDot <= 0) return { name: filename, extension: "" };
+  return {
+    name: filename.slice(0, lastDot),
+    extension: filename.slice(lastDot),
+  };
+}
+
+export function VideoCard({ video, onRenamed }: VideoCardProps) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
   const isProcessing = video.status === "processing";
   const isReady = video.status === "ready";
+  const canRename = !video.id.startsWith("vid_demo_");
   const resolutionLabel = getResolutionLabel(video.width, video.height);
+  const { name: currentName, extension } = splitFilename(video.filename);
 
   const completedRenditions = video.renditions.filter((r) => r.status === "ready");
   const activeRenditions = video.renditions.filter((r) => r.status === "processing");
 
+  const beginEditing = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setDraftName(currentName);
+    setIsEditing(true);
+  };
+
+  const discardEditing = () => {
+    setDraftName(currentName);
+    setIsEditing(false);
+  };
+
+  const saveName = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const nextName = draftName.trim();
+    if (!nextName || nextName === currentName || isSaving) {
+      if (nextName === currentName) discardEditing();
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const filename = await VideoAPI.renameVideo(video.id, nextName);
+      onRenamed?.(video.id, filename);
+      setIsEditing(false);
+      toast.success(`Renamed to ${filename}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to rename video");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   return (
-    <Link
-      href={`/video/${video.id}`}
-      className="group rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111726] hover:border-slate-300 dark:hover:border-slate-700 transition-all duration-200 flex flex-col overflow-hidden shadow-sm hover:shadow-md dark:shadow-none cursor-pointer"
-    >
+    <article className="group relative flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:border-slate-300 hover:shadow-md dark:border-slate-800 dark:bg-[#111726] dark:shadow-none dark:hover:border-slate-700">
+      <Link
+        href={`/video/${video.id}`}
+        className="absolute inset-0 z-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+        aria-label={`Open ${video.filename}`}
+      />
       {/* Thumbnail Placeholder Section */}
-      <div className="relative w-full aspect-video bg-slate-100 dark:bg-[#070a12] border-b border-slate-200 dark:border-slate-800 flex items-center justify-center overflow-hidden">
+      <div className="pointer-events-none relative z-10 flex aspect-video w-full items-center justify-center overflow-hidden border-b border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-[#070a12]">
         {/* Subtle grid pattern background */}
         <div className="absolute inset-0 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] dark:bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-40 group-hover:opacity-60 transition-opacity" />
 
@@ -68,11 +122,57 @@ export function VideoCard({ video }: VideoCardProps) {
       </div>
 
       {/* Card Body */}
-      <div className="p-4 flex-1 flex flex-col justify-between space-y-3">
+      <div className="pointer-events-none relative z-10 flex flex-1 flex-col justify-between space-y-3 p-4">
         <div>
-          <h3 className="font-mono text-sm font-semibold text-slate-900 dark:text-slate-100 group-hover:text-sky-600 dark:group-hover:text-sky-400 transition-colors line-clamp-1">
-            {video.filename}
-          </h3>
+          {isEditing ? (
+            <form
+              onSubmit={saveName}
+              className="pointer-events-auto flex min-w-0 items-center gap-1.5"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex min-w-0 flex-1 items-center overflow-hidden rounded-lg border border-sky-500/60 bg-slate-50 px-2 focus-within:ring-2 focus-within:ring-sky-500/20 dark:bg-slate-950">
+                <input
+                  autoFocus
+                  type="text"
+                  value={draftName}
+                  onChange={(event) => setDraftName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      discardEditing();
+                    }
+                  }}
+                  maxLength={Math.max(1, 255 - extension.length)}
+                  className="min-w-0 flex-1 bg-transparent py-1.5 font-mono text-xs font-semibold text-slate-900 outline-none dark:text-slate-100"
+                  aria-label="Video name"
+                />
+                <span className="shrink-0 font-mono text-xs text-slate-500">{extension}</span>
+              </div>
+              <button
+                type="submit"
+                disabled={!draftName.trim() || isSaving}
+                className="rounded-md p-1.5 text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Save name"
+                aria-label="Save video name"
+              >
+                <Check className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={discardEditing}
+                disabled={isSaving}
+                className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-500/10 hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Discard changes"
+                aria-label="Discard video name changes"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </form>
+          ) : (
+            <h3 className="line-clamp-1 font-mono text-sm font-semibold text-slate-900 transition-colors group-hover:text-sky-600 dark:text-slate-100 dark:group-hover:text-sky-400" title={video.filename}>
+              {video.filename}
+            </h3>
+          )}
           <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1">
             ID: <span className="text-slate-700 dark:text-slate-300 font-medium">{video.id}</span>
           </p>
@@ -108,9 +208,22 @@ export function VideoCard({ video }: VideoCardProps) {
             <HardDrive className="h-3.5 w-3.5 text-slate-400" />
             <span className="font-medium text-slate-700 dark:text-slate-300">{formatBytes(video.size)}</span>
           </div>
-          <span>{formatDate(video.createdAt)}</span>
+          <div className="flex items-center gap-1.5">
+            {canRename && !isEditing && (
+              <button
+                type="button"
+                onClick={beginEditing}
+                className="pointer-events-auto rounded p-1 text-slate-400 opacity-0 transition-all hover:bg-sky-500/10 hover:text-sky-500 focus:opacity-100 group-hover:opacity-100"
+                title="Rename video"
+                aria-label={`Rename ${video.filename}`}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            )}
+            <span>{formatDate(video.createdAt)}</span>
+          </div>
         </div>
       </div>
-    </Link>
+    </article>
   );
 }

@@ -1,8 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Video } from "@/types/video";
 import { VideoProcessingState } from "@/lib/hooks/use-video-processing-events";
-import { KafkaArchitectureDiagram } from "./kafka-architecture-diagram";
+import { KafkaArchitectureDiagram, RenditionDetails } from "./kafka-architecture-diagram";
 import {
   Activity,
   Sparkles,
@@ -27,18 +28,47 @@ export function ProcessingState({
   countdown = null,
   onForcePlay,
 }: ProcessingStateProps) {
+  const [selectedRenditionRes, setSelectedRenditionRes] = useState<string | null>(null);
 
-  // Calculate live readiness
+  // Calculate live readiness & chunk counts
   const renditions = processingState?.renditions?.length
     ? processingState.renditions
     : (video.renditions ?? []);
+
   const readyCount = renditions.filter((rendition) => {
     const status = (rendition.status || "").toUpperCase();
     return status === "READY";
   }).length;
 
+  const totalChunks = processingState?.total_chunks ?? renditions.reduce(
+    (acc, rendition) => acc + ("total_chunks" in rendition ? rendition.total_chunks : 1),
+    0
+  );
+  const completedChunks = processingState?.completed_chunks ?? readyCount;
+  const overallProgress = processingState?.overall_progress ?? (renditions.length ? Math.round((readyCount / renditions.length) * 100) : 0);
+  const selectedRendition = selectedRenditionRes
+    ? processingState?.renditions.find((rendition) => {
+        const resolution = (rendition.resolution || "").endsWith("p")
+          ? rendition.resolution
+          : `${rendition.resolution}p`;
+        return resolution === selectedRenditionRes;
+      }) ?? null
+    : null;
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedRenditionRes(null);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   return (
-    <div className="space-y-6 font-sans">
+    <div className={cn(
+      "items-start font-sans",
+      selectedRenditionRes && "min-[1800px]:relative min-[1800px]:left-1/2 min-[1800px]:grid min-[1800px]:w-[calc(100%+28rem)] min-[1800px]:-translate-x-1/2 min-[1800px]:grid-cols-[minmax(0,1fr)_26rem] min-[1800px]:gap-8"
+    )}>
+      <div className="min-w-0 space-y-6">
       {/* Real-time Processing Header Banner */}
       <div className="rounded-2xl border border-sky-500/20 bg-gradient-to-r from-sky-950/40 via-slate-900/60 to-slate-950/40 p-6 shadow-lg backdrop-blur-md space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
@@ -56,7 +86,7 @@ export function ProcessingState({
             </div>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-3 shrink-0 flex-wrap">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-mono font-medium bg-slate-900/80 border-slate-800">
               <span className={cn("h-2 w-2 rounded-full shrink-0", isCompleted ? "bg-emerald-400" : isConnected ? "bg-emerald-400 animate-ping" : "bg-amber-400")} />
               <span className={isCompleted || isConnected ? "text-emerald-400" : "text-amber-400"}>
@@ -65,13 +95,30 @@ export function ProcessingState({
             </div>
 
             <div className="px-3 py-1.5 rounded-xl border border-sky-500/30 bg-sky-500/10 text-sky-300 text-xs font-mono font-bold">
-              {readyCount} / {renditions.length} Ready
+              {readyCount} / {renditions.length} Renditions Ready
             </div>
-            {processingState && (
-              <div className="px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 text-xs font-mono font-bold">
-                {Math.round(processingState.overall_progress)}% Overall
-              </div>
-            )}
+
+            <div className="px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 text-xs font-mono font-bold">
+              Total Chunks: {completedChunks} / {totalChunks} ({Math.round(overallProgress)}%)
+            </div>
+          </div>
+        </div>
+
+        {/* Overall Progress Bar */}
+        <div className="space-y-1.5">
+          <div className="flex justify-between text-xs font-mono text-slate-400">
+            <span>Overall Chunks Transcoded Progress</span>
+            <span className="text-emerald-400 font-bold">{Math.round(overallProgress)}%</span>
+          </div>
+          <div className="h-2.5 w-full rounded-full bg-slate-800/80 overflow-hidden p-0.5 border border-slate-700/50">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-sky-500 via-teal-400 to-emerald-400 transition-all duration-500 relative overflow-hidden"
+              style={{ width: `${Math.max(0, Math.min(100, overallProgress))}%` }}
+            >
+              {!isCompleted && (
+                <div className="absolute inset-0 bg-white/20 animate-shimmer" style={{ backgroundSize: "200% 100%" }} />
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -106,7 +153,23 @@ export function ProcessingState({
       )}
 
       {/* Kafka Parallel Transcode Architecture Flow Diagram */}
-      <KafkaArchitectureDiagram video={video} processingState={processingState} />
+      <KafkaArchitectureDiagram
+        video={video}
+        processingState={processingState}
+        selectedRenditionRes={selectedRenditionRes}
+        onSelectRendition={setSelectedRenditionRes}
+      />
+      </div>
+
+      {selectedRenditionRes && (
+        <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-hidden bg-[#070a12] p-4 shadow-2xl min-[1800px]:sticky min-[1800px]:top-4 min-[1800px]:col-start-2 min-[1800px]:row-start-1 min-[1800px]:z-auto min-[1800px]:h-[min(44rem,calc(100vh-2rem))] min-[1800px]:w-auto min-[1800px]:max-w-none min-[1800px]:bg-transparent min-[1800px]:p-0 min-[1800px]:shadow-none">
+          <RenditionDetails
+            rendition={selectedRendition}
+            resolution={selectedRenditionRes}
+            onClose={() => setSelectedRenditionRes(null)}
+          />
+        </div>
+      )}
     </div>
   );
 }

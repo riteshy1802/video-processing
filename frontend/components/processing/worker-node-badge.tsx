@@ -18,10 +18,15 @@ export function WorkerNodeBadge({ status, workerId, className }: WorkerNodeBadge
 
   if (statusLower === "processing") {
     return (
-      <div className={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono font-bold bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30 shadow-xs", className)}>
+      <div className={cn("inline-flex min-w-0 items-center gap-1.5 px-2.5 py-1 rounded-md font-mono font-bold bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30 shadow-xs", className)}>
         <span className="h-1.5 w-1.5 rounded-full bg-sky-500 animate-ping shrink-0" />
         <Cpu className="h-3 w-3 shrink-0" />
-        <span>Processing · {formattedWorker}</span>
+        <span
+          className="max-w-36 truncate text-[9px]"
+          title={`Processing · ${formattedWorker}`}
+        >
+          Processing · {formattedWorker}
+        </span>
       </div>
     );
   }

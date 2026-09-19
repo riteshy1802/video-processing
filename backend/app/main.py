@@ -36,6 +36,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Has-More", "X-Next-Offset"],
 )
 
 # Include API Routers

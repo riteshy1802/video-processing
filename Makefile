@@ -1,4 +1,4 @@
-.PHONY: help install backend planner worker finalizer video-finalizer frontend infra infra-down init-kafka kafka-init check-topic dashboard kafka-ui produce-planner-job produce-planner produce-worker-job produce-worker produce-finalizer-job produce-finalizer produce-video-finalizer-job produce-video-jobs-finalizer produce-video-finalizer migrate test build clean
+.PHONY: help start-all install backend planner worker finalizer video-finalizer frontend infra infra-down init-kafka kafka-init check-topic dashboard kafka-ui produce-planner-job produce-planner produce-worker-job produce-worker produce-finalizer-job produce-finalizer produce-video-finalizer-job produce-video-jobs-finalizer produce-video-finalizer migrate test build clean
 
 PORT ?= 7500
 TOPIC ?= $(or $(topic),planner.jobs)
@@ -8,6 +8,7 @@ help:
 	@echo "=========================================================================="
 	@echo "Distributed Video Transcoding Platform - Management Commands"
 	@echo "=========================================================================="
+	@echo "  make start-all                  - Launch full cluster (1x frontend, 1x backend, 2x planners, 3x workers, 2x finalizers, 2x video finalizers) in separate terminal windows"
 	@echo "  make install                    - Install backend Python dependencies and frontend packages"
 	@echo "  make backend                    - Start FastAPI backend server on port $(PORT)"
 	@echo "  make planner                    - Start Planner consumer process"
@@ -28,6 +29,10 @@ help:
 	@echo "  make test                       - Run backend integration test suite"
 	@echo "  make build                      - Build production bundle for Next.js frontend"
 	@echo "=========================================================================="
+
+start-all:
+	@echo "Launching full cluster in separate terminal windows..."
+	./start_platform.sh
 
 
 

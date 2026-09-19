@@ -20,6 +20,10 @@ export const metadata: Metadata = {
   title: "Transcode.io | Distributed Video Processing & Transcoding",
   description:
     "Professional distributed video transcoding and adaptive bitrate streaming platform.",
+  icons: {
+    icon: "/transcode-favicon.ico",
+    shortcut: "/transcode-favicon.ico",
+  },
 };
 
 export default function RootLayout({

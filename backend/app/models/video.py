@@ -35,6 +35,7 @@ class Video(Base):
     source_width: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     source_height: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     duration_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    source_frame_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now

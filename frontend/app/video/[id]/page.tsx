@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useVideoProcessingEvents } from "@/lib/hooks/use-video-processing-events";
 import { 
+  cn,
   formatBytes, 
   formatDuration, 
   formatDate, 
@@ -158,7 +159,7 @@ export default function VideoDetailPage({
   const renditionsSummary = video.renditions.map((r) => r.resolution).join(", ");
 
   return (
-    <div className="max-w-5xl mx-auto space-y-8 font-sans">
+    <div className={cn(isReady ? "max-w-5xl" : "max-w-[90rem]", "mx-auto space-y-8 font-sans")}>
       {/* Video Detail Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200/80 dark:border-slate-800/60 pb-6">
         <div className="space-y-1">

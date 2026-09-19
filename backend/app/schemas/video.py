@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 class CreateVideoRequest(BaseModel):
@@ -36,6 +36,32 @@ class CompleteUploadResponse(BaseModel):
     uploaded_at: datetime
 
 
+class RenameVideoRequest(BaseModel):
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="New display filename without the file extension",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Video name cannot be empty")
+        if any(character in value for character in ("/", "\\", "\x00")):
+            raise ValueError("Video name cannot contain path separators")
+        if any(ord(character) < 32 for character in value):
+            raise ValueError("Video name cannot contain control characters")
+        return value
+
+
+class RenameVideoResponse(BaseModel):
+    id: uuid.UUID
+    original_filename: str
+
+
 class RenditionResponse(BaseModel):
     id: uuid.UUID
     resolution: int
@@ -60,6 +86,7 @@ class VideoResponse(BaseModel):
     source_width: Optional[int] = None
     source_height: Optional[int] = None
     duration_seconds: Optional[float] = None
+    source_frame_rate: Optional[float] = None
     playback_url: Optional[str] = None
     master_playlist_url: Optional[str] = None
     renditions: List[RenditionResponse] = []
@@ -82,6 +109,7 @@ class VideoDetailResponse(BaseModel):
     source_width: Optional[int] = None
     source_height: Optional[int] = None
     duration_seconds: Optional[float] = None
+    source_frame_rate: Optional[float] = None
     renditions: List[RenditionResponse] = []
 
     model_config = ConfigDict(from_attributes=True)

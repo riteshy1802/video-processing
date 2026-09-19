@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Video } from "@/types/video";
 import { VideoCard } from "./video-card";
@@ -8,12 +8,16 @@ import { VideoCardSkeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { PopoverDropdown } from "@/components/ui/popover-dropdown";
 import { Tooltip } from "@/components/ui/tooltip";
-import { Film, Upload, Search, Filter, RefreshCw } from "lucide-react";
+import { Film, Upload, Search, Filter, RefreshCw, LoaderCircle } from "lucide-react";
 
 interface VideoGridProps {
   videos: Video[];
   isLoading?: boolean;
   onRefresh?: () => void;
+  onVideoRenamed?: (videoId: string, filename: string) => void;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 const STATUS_OPTIONS = [
@@ -24,9 +28,34 @@ const STATUS_OPTIONS = [
   { label: "Uploading", value: "uploading" },
 ];
 
-export function VideoGrid({ videos, isLoading = false, onRefresh }: VideoGridProps) {
+export function VideoGrid({
+  videos,
+  isLoading = false,
+  onRefresh,
+  onVideoRenamed,
+  hasMore = false,
+  isLoadingMore = false,
+  onLoadMore,
+}: VideoGridProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    const target = loadMoreRef.current;
+    if (!target || !hasMore || isLoadingMore || !onLoadMore) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) onLoadMore();
+      },
+      { rootMargin: "240px 0px" }
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasMore, isLoading, isLoadingMore, onLoadMore]);
 
   const filteredVideos = videos.filter((video) => {
     const matchesSearch = video.filename
@@ -40,7 +69,7 @@ export function VideoGrid({ videos, isLoading = false, onRefresh }: VideoGridPro
   if (isLoading) {
     return (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {[1, 2, 3, 4, 5, 6].map((i) => (
+        {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => (
           <VideoCardSkeleton key={i} />
         ))}
       </div>
@@ -124,10 +153,27 @@ export function VideoGrid({ videos, isLoading = false, onRefresh }: VideoGridPro
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredVideos.map((video) => (
-            <VideoCard key={video.id} video={video} />
+            <VideoCard key={video.id} video={video} onRenamed={onVideoRenamed} />
           ))}
         </div>
       )}
+
+      <div
+        ref={loadMoreRef}
+        className="flex min-h-10 items-center justify-center font-mono text-xs text-slate-500 dark:text-slate-400"
+        aria-live="polite"
+      >
+        {isLoadingMore ? (
+          <span className="flex items-center gap-2">
+            <LoaderCircle className="h-4 w-4 animate-spin text-sky-500" />
+            Loading more videos…
+          </span>
+        ) : hasMore ? (
+          <span>Scroll to load more videos</span>
+        ) : (
+          <span>All videos loaded</span>
+        )}
+      </div>
     </div>
   );
 }

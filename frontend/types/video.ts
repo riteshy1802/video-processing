@@ -70,13 +70,27 @@ export interface ChunkProgressState {
   chunk_index: number;
   rendition_id: string;
   resolution: string;
-  worker_id: string;
+  worker_id?: string;
   status: "PENDING" | "PROCESSING" | "DONE" | "FAILED";
   progress: number;
   start_seconds?: number;
   end_seconds?: number;
   error?: string;
+  message?: string;
+  ffmpeg?: FFmpegProgressInfo;
   updated_at?: string;
+}
+
+export interface FFmpegProgressInfo {
+  frame?: number | null;
+  fps?: number | null;
+  time?: string | null;
+  speed?: string | null;
+  bitrate?: string | null;
+  total_size?: number | null;
+  dup_frames?: number | null;
+  drop_frames?: number | null;
+  progress?: string | null;
 }
 
 export interface RenditionProgressState {
@@ -110,5 +124,6 @@ export interface SSEEventData {
   worker_id?: string;
   progress?: number;
   error?: string;
+  message?: string;
+  ffmpeg?: FFmpegProgressInfo;
 }
-

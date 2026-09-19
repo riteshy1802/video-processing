@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models import Video, Rendition
 from app.services.redis_publisher import get_async_redis_client
+from app.services.thumbnail_service import build_thumbnail_url
 
 logger = logging.getLogger("sse_events")
 router = APIRouter(prefix="/api/videos", tags=["Real-time Events"])
@@ -107,6 +108,8 @@ async def build_initial_state_snapshot(db: AsyncSession, video_id: uuid.UUID) ->
         "duration_seconds": video.duration_seconds,
         "source_height": video.source_height,
         "source_frame_rate": video.source_frame_rate,
+        "thumbnail_url": build_thumbnail_url(video.id, video.thumbnail_version),
+        "thumbnail_version": video.thumbnail_version,
         "total_renditions": len(rendition_list),
         "total_chunks": len(all_chunks),
         "completed_chunks": sum(

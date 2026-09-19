@@ -26,8 +26,8 @@ export function VideoStatusBadge({
 
     case "queued":
       return (
-        <Badge variant="amber" className={cn("gap-1.5 font-semibold", className)}>
-          {showIcon && <Clock className="h-3 w-3" />}
+        <Badge variant="slate" className={cn("gap-1.5 font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700", className)}>
+          {showIcon && <Clock className="h-3 w-3 text-slate-500 dark:text-slate-400" />}
           <span>Queued</span>
         </Badge>
       );

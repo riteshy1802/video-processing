@@ -13,7 +13,8 @@ import {
   AlertCircle,
   Film,
   Check,
-  Loader2
+  Loader2,
+  Gauge
 } from "lucide-react";
 import { cn, formatDuration } from "@/lib/utils";
 
@@ -24,6 +25,7 @@ interface VideoPlayerProps {
   poster?: string;
   className?: string;
   autoPlay?: boolean;
+  deferLoadingUntilPlay?: boolean;
   selectedQuality?: string;
   onQualityChange?: (quality: string) => void;
   onMetadataLoaded?: (metadata: { duration: number; width: number; height: number }) => void;
@@ -35,6 +37,7 @@ export function VideoPlayer({
   poster,
   className,
   autoPlay = false,
+  deferLoadingUntilPlay = false,
   selectedQuality: externalQuality,
   onQualityChange,
   onMetadataLoaded,
@@ -49,6 +52,8 @@ export function VideoPlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const [playbackRate, setPlaybackRate] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -56,9 +61,19 @@ export function VideoPlayer({
   const [levels, setLevels] = useState<{ id: number; height: number; bitrate: number }[]>([]);
   const [internalQuality, setInternalQuality] = useState<string>("auto");
   const [showQualityMenu, setShowQualityMenu] = useState(false);
+  const [showPlaybackMenu, setShowPlaybackMenu] = useState(false);
   const qualityMenuRef = useRef<HTMLDivElement | null>(null);
+  const playbackMenuRef = useRef<HTMLDivElement | null>(null);
   const wasPlayingRef = useRef<boolean>(false);
   const retryTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const requestedSeekTimeRef = useRef<number | null>(null);
+  const playbackEndedRef = useRef(false);
+  const playWhenReadyRef = useRef(false);
+  const lastAudibleVolumeRef = useRef(1);
+  const playbackRateRef = useRef(1);
+  const [isLoadRequested, setIsLoadRequested] = useState(
+    autoPlay || !deferLoadingUntilPlay
+  );
 
   const currentQuality = externalQuality !== undefined ? externalQuality : internalQuality;
 
@@ -71,15 +86,22 @@ export function VideoPlayer({
       ) {
         setShowQualityMenu(false);
       }
+      if (
+        playbackMenuRef.current &&
+        !playbackMenuRef.current.contains(event.target as Node)
+      ) {
+        setShowPlaybackMenu(false);
+      }
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setShowQualityMenu(false);
+        setShowPlaybackMenu(false);
       }
     };
 
-    if (showQualityMenu) {
+    if (showQualityMenu || showPlaybackMenu) {
       document.addEventListener("pointerdown", handleClickOutside, true);
       document.addEventListener("click", handleClickOutside, true);
       document.addEventListener("keydown", handleKeyDown);
@@ -89,7 +111,7 @@ export function VideoPlayer({
       document.removeEventListener("click", handleClickOutside, true);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [showQualityMenu]);
+  }, [showQualityMenu, showPlaybackMenu]);
 
   // Hover frame preview state & non-blocking seek queue
   const [hoverTime, setHoverTime] = useState<number | null>(null);
@@ -183,9 +205,36 @@ export function VideoPlayer({
   // Initialize HLS for main player with resilient network retry
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !src) return;
+    if (!video || !src || !isLoadRequested) return;
 
     setError(null);
+    let timelineFrame: number | null = null;
+
+    const stopTimelineUpdates = () => {
+      if (timelineFrame !== null) {
+        window.cancelAnimationFrame(timelineFrame);
+        timelineFrame = null;
+      }
+    };
+
+    const updateTimelineSmoothly = () => {
+      if (
+        !video.paused &&
+        !video.ended &&
+        !video.seeking &&
+        requestedSeekTimeRef.current === null
+      ) {
+        setCurrentTime(video.currentTime);
+        timelineFrame = window.requestAnimationFrame(updateTimelineSmoothly);
+      } else {
+        timelineFrame = null;
+      }
+    };
+
+    const startTimelineUpdates = () => {
+      stopTimelineUpdates();
+      timelineFrame = window.requestAnimationFrame(updateTimelineSmoothly);
+    };
 
     const handleWaiting = () => {
       if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
@@ -195,21 +244,59 @@ export function VideoPlayer({
     };
 
     const handlePlaying = () => {
-      clearBuffering();
+      playbackEndedRef.current = false;
+      video.defaultPlaybackRate = playbackRateRef.current;
+      video.playbackRate = playbackRateRef.current;
+      if (requestedSeekTimeRef.current === null && !video.seeking) {
+        clearBuffering();
+      }
       setIsPlaying(true);
+      startTimelineUpdates();
     };
 
     const handleCanPlay = () => {
+      if (requestedSeekTimeRef.current === null && !video.seeking) {
+        clearBuffering();
+      }
+    };
+
+    const handlePause = () => {
+      stopTimelineUpdates();
+      setIsPlaying(false);
+    };
+
+    const handleEnded = () => {
+      stopTimelineUpdates();
+      playbackEndedRef.current = true;
+      const finalDuration = Number.isFinite(video.duration) && video.duration > 0
+        ? video.duration
+        : video.currentTime;
+      requestedSeekTimeRef.current = null;
+      setDuration(finalDuration);
+      setCurrentTime(finalDuration);
+      setIsPlaying(false);
       clearBuffering();
     };
 
-    const handlePause = () => setIsPlaying(false);
-
     const updateTime = () => {
-      setCurrentTime(video.currentTime);
-      clearBuffering();
-      const dur = video.duration || 0;
+      const dur = Number.isFinite(video.duration) ? video.duration : 0;
       setDuration(dur);
+
+      if (video.ended || playbackEndedRef.current) {
+        setCurrentTime(dur || video.currentTime);
+        clearBuffering();
+        return;
+      }
+
+      const requestedTime = requestedSeekTimeRef.current;
+      if (requestedTime === null && !video.seeking) {
+        setCurrentTime(video.currentTime);
+        clearBuffering();
+      } else if (requestedTime !== null) {
+        // Do not let an old timeupdate event snap the scrubber back while the
+        // requested HLS fragment is still being loaded.
+        setCurrentTime(requestedTime);
+      }
       if (onMetadataLoaded && (dur > 0 || video.videoWidth > 0)) {
         onMetadataLoaded({
           duration: Math.round(dur),
@@ -219,12 +306,31 @@ export function VideoPlayer({
       }
     };
 
+    const handleSeeking = () => {
+      playbackEndedRef.current = false;
+      stopTimelineUpdates();
+      const requestedTime = requestedSeekTimeRef.current ?? video.currentTime;
+      requestedSeekTimeRef.current = requestedTime;
+      setCurrentTime(requestedTime);
+      setIsBuffering(true);
+    };
+
+    const handleSeeked = () => {
+      requestedSeekTimeRef.current = null;
+      setCurrentTime(video.currentTime);
+      clearBuffering();
+      if (!video.paused) startTimelineUpdates();
+    };
+
     video.addEventListener("timeupdate", updateTime);
     video.addEventListener("loadedmetadata", updateTime);
+    video.addEventListener("seeking", handleSeeking);
+    video.addEventListener("seeked", handleSeeked);
     video.addEventListener("waiting", handleWaiting);
     video.addEventListener("playing", handlePlaying);
     video.addEventListener("canplay", handleCanPlay);
     video.addEventListener("pause", handlePause);
+    video.addEventListener("ended", handleEnded);
 
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
@@ -269,7 +375,12 @@ export function VideoPlayer({
     // and exposes no API for this quality selector to lock a rendition.
     if (!Hls.isSupported() && video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = src;
-      if (autoPlay) video.play().catch(() => setIsPlaying(false));
+      video.defaultPlaybackRate = playbackRateRef.current;
+      video.playbackRate = playbackRateRef.current;
+      if (autoPlay || playWhenReadyRef.current) {
+        playWhenReadyRef.current = false;
+        video.play().catch(() => setIsPlaying(false));
+      }
     } else if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
@@ -298,6 +409,8 @@ export function VideoPlayer({
       };
 
       hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+        video.defaultPlaybackRate = playbackRateRef.current;
+        video.playbackRate = playbackRateRef.current;
         const raw = (data.levels && data.levels.length > 0) ? data.levels : (hls.levels || []);
         if (raw.length > 0) {
           const parsed = raw.map((lvl, idx) => ({
@@ -310,7 +423,10 @@ export function VideoPlayer({
           // Lock quality immediately when manifest is parsed
           applyQualityLock(hls, currentQualityRef.current, raw);
         }
-        if (autoPlay) video.play().catch(() => setIsPlaying(false));
+        if (autoPlay || playWhenReadyRef.current) {
+          playWhenReadyRef.current = false;
+          video.play().catch(() => setIsPlaying(false));
+        }
       });
 
       hls.on(Hls.Events.LEVEL_LOADED, () => {
@@ -357,14 +473,18 @@ export function VideoPlayer({
 
       return () => {
         if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
+        stopTimelineUpdates();
         stopRetryPolling();
         hls.destroy();
         video.removeEventListener("timeupdate", updateTime);
         video.removeEventListener("loadedmetadata", updateTime);
+        video.removeEventListener("seeking", handleSeeking);
+        video.removeEventListener("seeked", handleSeeked);
         video.removeEventListener("waiting", handleWaiting);
         video.removeEventListener("playing", handlePlaying);
         video.removeEventListener("canplay", handleCanPlay);
         video.removeEventListener("pause", handlePause);
+        video.removeEventListener("ended", handleEnded);
         window.removeEventListener("offline", handleOffline);
         window.removeEventListener("online", handleOnline);
         document.removeEventListener("fullscreenchange", handleFullscreenChange);
@@ -373,18 +493,22 @@ export function VideoPlayer({
 
     return () => {
       if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
+      stopTimelineUpdates();
       stopRetryPolling();
       video.removeEventListener("timeupdate", updateTime);
       video.removeEventListener("loadedmetadata", updateTime);
+      video.removeEventListener("seeking", handleSeeking);
+      video.removeEventListener("seeked", handleSeeked);
       video.removeEventListener("waiting", handleWaiting);
       video.removeEventListener("playing", handlePlaying);
       video.removeEventListener("canplay", handleCanPlay);
       video.removeEventListener("pause", handlePause);
+      video.removeEventListener("ended", handleEnded);
       window.removeEventListener("offline", handleOffline);
       window.removeEventListener("online", handleOnline);
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
     };
-  }, [src, autoPlay]);
+  }, [src, autoPlay, isLoadRequested]);
 
   // Handle quality changes with instant level lock & immediate segment fetch
   useEffect(() => {
@@ -394,7 +518,7 @@ export function VideoPlayer({
   // Initialize HLS for preview frame player (locked to 144p level-0 for instant non-blocking seeks, autoStartLoad disabled)
   useEffect(() => {
     const previewVideo = previewVideoRef.current;
-    if (!previewVideo || !src) return;
+    if (!previewVideo || !src || !isLoadRequested) return;
 
     if (!Hls.isSupported() && previewVideo.canPlayType("application/vnd.apple.mpegurl")) {
       previewVideo.src = src;
@@ -416,7 +540,7 @@ export function VideoPlayer({
         previewHls.destroy();
       };
     }
-  }, [src]);
+  }, [src, isLoadRequested]);
 
   // Handle queued seeks when preview video finishes seeking
   useEffect(() => {
@@ -451,6 +575,14 @@ export function VideoPlayer({
   const togglePlay = () => {
     const video = videoRef.current;
     if (!video) return;
+
+    if (!isLoadRequested) {
+      playWhenReadyRef.current = true;
+      setIsBuffering(true);
+      setIsLoadRequested(true);
+      return;
+    }
+
     if (isPlaying) {
       video.pause();
       setIsPlaying(false);
@@ -462,30 +594,66 @@ export function VideoPlayer({
   const toggleMute = () => {
     const video = videoRef.current;
     if (!video) return;
-    video.muted = !isMuted;
-    setIsMuted(!isMuted);
+
+    if (video.muted || video.volume === 0) {
+      if (video.volume === 0) {
+        video.volume = lastAudibleVolumeRef.current;
+        setVolume(video.volume);
+      }
+      video.muted = false;
+    } else {
+      lastAudibleVolumeRef.current = video.volume;
+      video.muted = true;
+    }
+    setIsMuted(video.muted);
   };
 
-  const seekDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const nextVolume = Math.max(0, Math.min(1, Number(e.target.value)));
+    video.volume = nextVolume;
+    video.muted = nextVolume === 0;
+    if (nextVolume > 0) lastAudibleVolumeRef.current = nextVolume;
+    setVolume(nextVolume);
+    setIsMuted(video.muted);
+  };
+
+  const handlePlaybackRateChange = (nextRate: number) => {
+    const video = videoRef.current;
+    if (!video || !Number.isFinite(nextRate)) return;
+
+    playbackRateRef.current = nextRate;
+    video.defaultPlaybackRate = nextRate;
+    video.playbackRate = nextRate;
+    setPlaybackRate(nextRate);
+    setShowPlaybackMenu(false);
+  };
+
   const hoverSeekDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const video = videoRef.current;
     if (!video) return;
-    const newTime = parseFloat(e.target.value);
+    const parsedTime = parseFloat(e.target.value);
+    if (!Number.isFinite(parsedTime)) return;
+    const newTime = Math.max(0, Math.min(parsedTime, video.duration || parsedTime));
 
-    // Instant 60fps UI update for scrubber bar position & timestamp text
-    setCurrentTime(newTime);
-
-    // Debounce media engine seek request by 150ms to prevent flooding network requests
-    if (seekDebounceTimerRef.current) {
-      clearTimeout(seekDebounceTimerRef.current);
+    // Keep both the scrubber and the media element at the requested position
+    // immediately. The pending ref prevents stale HLS timeupdate events from
+    // moving the UI back while the target fragment is being fetched.
+    if (Math.abs(video.currentTime - newTime) < 0.05 && !video.seeking) {
+      requestedSeekTimeRef.current = null;
+      setCurrentTime(newTime);
+      clearBuffering();
+      return;
     }
-    seekDebounceTimerRef.current = setTimeout(() => {
-      if (video) {
-        video.currentTime = newTime;
-      }
-    }, 150);
+
+    requestedSeekTimeRef.current = newTime;
+    setCurrentTime(newTime);
+    setIsBuffering(true);
+    video.currentTime = newTime;
   };
 
   const toggleFullscreen = () => {
@@ -509,6 +677,7 @@ export function VideoPlayer({
     setInternalQuality(val);
     if (onQualityChange) onQualityChange(val);
     setShowQualityMenu(false);
+    setShowPlaybackMenu(false);
   };
 
 
@@ -578,7 +747,9 @@ export function VideoPlayer({
     );
   }
 
-  const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const progressPercent = duration > 0
+    ? Math.max(0, Math.min(100, (currentTime / duration) * 100))
+    : 0;
 
   // Construct quality options from hls.js levels or video renditions prop
   const computedQualityOptions = (() => {
@@ -628,7 +799,7 @@ export function VideoPlayer({
       <video
         ref={videoRef}
         poster={poster}
-        preload="auto"
+        preload={isLoadRequested ? "auto" : "none"}
         onClick={togglePlay}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
@@ -731,14 +902,14 @@ export function VideoPlayer({
             type="range"
             min={0}
             max={duration || 100}
-            step={0.1}
+            step={0.01}
             value={currentTime}
             onChange={handleSeek}
             style={{
               background: `linear-gradient(to right, #0284c7 0%, #38bdf8 ${progressPercent}%, rgba(255, 255, 255, 0.2) ${progressPercent}%, rgba(255, 255, 255, 0.2) 100%)`,
             }}
             className={cn(
-              "w-full h-2 rounded-full appearance-none cursor-pointer focus:outline-none transition-all shadow-xs",
+              "w-full h-2 rounded-full appearance-none cursor-pointer focus:outline-none shadow-xs",
               "[&::-webkit-slider-thumb]:appearance-none",
               "[&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5",
               "[&::-webkit-slider-thumb]:rounded-full",
@@ -768,13 +939,34 @@ export function VideoPlayer({
               {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
             </button>
 
-            <button
-              onClick={toggleMute}
-              className="p-2 rounded-lg bg-slate-900/80 border border-slate-700/60 hover:bg-slate-800 text-slate-200 transition-colors cursor-pointer"
-              title={isMuted ? "Unmute" : "Mute"}
-            >
-              {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-            </button>
+            <div className="group/volume flex items-center rounded-lg border border-slate-700/60 bg-slate-900/80 text-slate-200 transition-colors hover:bg-slate-800">
+              <button
+                type="button"
+                onClick={toggleMute}
+                className="cursor-pointer p-2"
+                title={isMuted || volume === 0 ? "Unmute" : "Mute"}
+                aria-label={isMuted || volume === 0 ? "Unmute" : "Mute"}
+              >
+                {isMuted || volume === 0 ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+              </button>
+
+              <div className="w-0 overflow-hidden opacity-0 transition-[width,opacity,padding] duration-200 group-hover/volume:w-24 group-hover/volume:pr-3 group-hover/volume:opacity-100">
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={isMuted ? 0 : volume}
+                  onChange={handleVolumeChange}
+                  aria-label="Volume"
+                  title={`Volume ${Math.round((isMuted ? 0 : volume) * 100)}%`}
+                  style={{
+                    background: `linear-gradient(to right, #38bdf8 0%, #38bdf8 ${(isMuted ? 0 : volume) * 100}%, rgba(148, 163, 184, 0.35) ${(isMuted ? 0 : volume) * 100}%, rgba(148, 163, 184, 0.35) 100%)`,
+                  }}
+                  className="h-1.5 w-full cursor-pointer appearance-none rounded-full focus:outline-none [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-sky-400 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-sky-400"
+                />
+              </div>
+            </div>
 
             {/* Time Display */}
             <span className="text-xs font-mono text-slate-200 font-medium">
@@ -783,10 +975,52 @@ export function VideoPlayer({
           </div>
 
           <div className="flex items-center gap-2 relative">
+            <div ref={playbackMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPlaybackMenu((current) => !current);
+                  setShowQualityMenu(false);
+                }}
+                className="flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-700/60 bg-slate-900/80 px-3 font-mono text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800"
+                title="Playback speed"
+                aria-haspopup="menu"
+                aria-expanded={showPlaybackMenu}
+              >
+                <Gauge className="h-3.5 w-3.5 text-sky-400" />
+                <span>{playbackRate}×</span>
+              </button>
+
+              {showPlaybackMenu && (
+                <div className="absolute bottom-full right-0 z-50 mb-2 w-36 rounded-xl border border-slate-700 bg-slate-900 p-1.5 font-mono text-xs text-slate-200 shadow-xl">
+                  <div className="mb-1 border-b border-slate-800 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Playback Speed
+                  </div>
+                  {[0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => (
+                    <button
+                      key={rate}
+                      type="button"
+                      onClick={() => handlePlaybackRateChange(rate)}
+                      className={cn(
+                        "flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-slate-800",
+                        playbackRate === rate && "bg-sky-500/10 font-semibold text-sky-400"
+                      )}
+                    >
+                      <span>{rate}×</span>
+                      {playbackRate === rate && <Check className="h-3.5 w-3.5" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Quality Menu Popover */}
             <div ref={qualityMenuRef} className="relative">
               <button
-                onClick={() => setShowQualityMenu(!showQualityMenu)}
+                onClick={() => {
+                  setShowQualityMenu(!showQualityMenu);
+                  setShowPlaybackMenu(false);
+                }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900/80 border border-slate-700/60 hover:bg-slate-800 text-slate-200 font-mono text-xs transition-colors cursor-pointer"
               >
                 <Settings className="h-3.5 w-3.5 text-sky-400" />

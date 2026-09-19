@@ -23,6 +23,7 @@ export interface VideoProcessingState extends Omit<ProcessingSnapshot, "renditio
 interface UseVideoProcessingEventsOptions {
   enabled?: boolean;
   onVideoReady?: () => void;
+  onThumbnailReady?: (thumbnailUrl: string, thumbnailVersion: number) => void;
 }
 
 function resolutionLabel(value: unknown): ResolutionType {
@@ -99,9 +100,14 @@ function renditionFrom(data: Record<string, unknown>): RenditionState {
 }
 
 function snapshotFrom(videoId: string, data: Record<string, unknown>): VideoProcessingState {
-  const renditions = Array.isArray(data.renditions)
+  const rawRenditions = Array.isArray(data.renditions)
     ? data.renditions.map((rendition) => renditionFrom(rendition as Record<string, unknown>))
     : [];
+  const renditions = [...rawRenditions].sort((a, b) => {
+    const resA = parseInt(String(a.resolution).replace(/\D/g, ""), 10) || 0;
+    const resB = parseInt(String(b.resolution).replace(/\D/g, ""), 10) || 0;
+    return resA - resB;
+  });
   return aggregateVideo({
     video_id: String(data.video_id ?? videoId),
     video_status: String(data.status ?? data.video_status ?? "PROCESSING").toUpperCase(),
@@ -177,17 +183,22 @@ function applyEvent(previous: VideoProcessingState | null, videoId: string, data
 }
 
 export function useVideoProcessingEvents(videoId: string, options: UseVideoProcessingEventsOptions = {}) {
-  const { enabled = true, onVideoReady } = options;
+  const { enabled = true, onVideoReady, onThumbnailReady } = options;
   const [processingState, setProcessingState] = useState<VideoProcessingState | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
   const [isFailed, setIsFailed] = useState(false);
   const onVideoReadyRef = useRef(onVideoReady);
+  const onThumbnailReadyRef = useRef(onThumbnailReady);
   const readyNotifiedRef = useRef(false);
 
   useEffect(() => {
     onVideoReadyRef.current = onVideoReady;
   }, [onVideoReady]);
+
+  useEffect(() => {
+    onThumbnailReadyRef.current = onThumbnailReady;
+  }, [onThumbnailReady]);
 
   useEffect(() => {
     if (!videoId || !enabled || videoId.startsWith("vid_demo_")) return;
@@ -201,6 +212,18 @@ export function useVideoProcessingEvents(videoId: string, options: UseVideoProce
         const isSnapshot = data.type === "initial.state" || data.type === "snapshot";
         const snapshot = data.type === "snapshot" ? data.snapshot as Record<string, unknown> : data;
         setProcessingState((previous) => isSnapshot ? snapshotFrom(videoId, snapshot) : applyEvent(previous, videoId, data));
+
+        const thumbnailUrl = snapshot.thumbnail_url;
+        if (
+          (data.type === "thumbnail.ready" || isSnapshot) &&
+          typeof thumbnailUrl === "string" &&
+          thumbnailUrl
+        ) {
+          onThumbnailReadyRef.current?.(
+            thumbnailUrl,
+            Number(snapshot.thumbnail_version ?? 0)
+          );
+        }
 
         const videoStatus = String(data.status ?? data.video_status ?? "").toUpperCase();
         const isTerminalSnapshot =

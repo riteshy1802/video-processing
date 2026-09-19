@@ -39,6 +39,7 @@ export interface Video {
   mimeType?: string;
   status: VideoStatus;
   thumbnailUrl?: string;
+  thumbnailVersion?: number;
   playbackUrl?: string;
   createdAt: string;
   updatedAt?: string;
@@ -110,6 +111,8 @@ export interface ProcessingSnapshot {
   total_chunks: number;
   completed_chunks: number;
   overall_progress: number;
+  thumbnail_url?: string;
+  thumbnail_version?: number;
   renditions: RenditionProgressState[];
 }
 
@@ -126,4 +129,6 @@ export interface SSEEventData {
   error?: string;
   message?: string;
   ffmpeg?: FFmpegProgressInfo;
+  thumbnail_url?: string;
+  thumbnail_version?: number;
 }

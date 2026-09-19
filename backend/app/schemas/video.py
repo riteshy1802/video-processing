@@ -62,6 +62,21 @@ class RenameVideoResponse(BaseModel):
     original_filename: str
 
 
+class CreateThumbnailUploadRequest(BaseModel):
+    content_type: str = Field(..., description="JPEG, PNG, or WebP MIME type")
+    file_size_bytes: int = Field(..., gt=0)
+
+
+class CreateThumbnailUploadResponse(BaseModel):
+    upload_url: str
+    expires_in: int
+
+
+class CompleteThumbnailUploadResponse(BaseModel):
+    thumbnail_url: str
+    thumbnail_version: int
+
+
 class RenditionResponse(BaseModel):
     id: uuid.UUID
     resolution: int
@@ -89,6 +104,8 @@ class VideoResponse(BaseModel):
     source_frame_rate: Optional[float] = None
     playback_url: Optional[str] = None
     master_playlist_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    thumbnail_version: int = 0
     renditions: List[RenditionResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
@@ -104,6 +121,8 @@ class VideoDetailResponse(BaseModel):
     original_url: str
     playback_url: Optional[str] = None
     master_playlist_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    thumbnail_version: int = 0
     created_at: datetime
     uploaded_at: Optional[datetime] = None
     source_width: Optional[int] = None

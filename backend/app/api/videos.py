@@ -9,10 +9,14 @@ from app.schemas.video import (
     CompleteUploadResponse,
     RenameVideoRequest,
     RenameVideoResponse,
+    CreateThumbnailUploadRequest,
+    CreateThumbnailUploadResponse,
+    CompleteThumbnailUploadResponse,
     VideoResponse,
     VideoDetailResponse,
 )
 from app.services.video_service import video_service
+from app.services.thumbnail_service import thumbnail_service
 
 router = APIRouter(prefix="/api/videos", tags=["Videos"])
 
@@ -85,6 +89,33 @@ async def rename_video(
     db: AsyncSession = Depends(get_db),
 ) -> RenameVideoResponse:
     return await video_service.rename_video(db, video_id, req)
+
+
+@router.post(
+    "/{video_id}/thumbnail/upload",
+    response_model=CreateThumbnailUploadResponse,
+    summary="Initiate Custom Thumbnail Upload",
+    description="Returns a presigned S3 PUT URL for a bounded JPEG, PNG, or WebP upload.",
+)
+async def create_thumbnail_upload(
+    video_id: uuid.UUID,
+    req: CreateThumbnailUploadRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CreateThumbnailUploadResponse:
+    return await thumbnail_service.create_custom_upload(db, video_id, req)
+
+
+@router.post(
+    "/{video_id}/thumbnail/complete",
+    response_model=CompleteThumbnailUploadResponse,
+    summary="Verify and Apply Custom Thumbnail",
+    description="Verifies the direct S3 upload, normalizes it to WebP, and replaces the final thumbnail.",
+)
+async def complete_thumbnail_upload(
+    video_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> CompleteThumbnailUploadResponse:
+    return await thumbnail_service.complete_custom_upload(db, video_id)
 
 
 @router.delete(

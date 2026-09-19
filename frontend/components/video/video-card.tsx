@@ -11,7 +11,7 @@ import {
   formatDate, 
   getResolutionLabel 
 } from "@/lib/utils";
-import { Film, HardDrive, Clock, Play, Sparkles, Pencil, Check, X } from "lucide-react";
+import { Film, HardDrive, Clock, Play, Pencil, Check, X } from "lucide-react";
 import { toast } from "sonner";
 
 interface VideoCardProps {
@@ -37,9 +37,6 @@ export function VideoCard({ video, onRenamed }: VideoCardProps) {
   const canRename = !video.id.startsWith("vid_demo_");
   const resolutionLabel = getResolutionLabel(video.width, video.height);
   const { name: currentName, extension } = splitFilename(video.filename);
-
-  const completedRenditions = video.renditions.filter((r) => r.status === "ready");
-  const activeRenditions = video.renditions.filter((r) => r.status === "processing");
 
   const beginEditing = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -82,10 +79,21 @@ export function VideoCard({ video, onRenamed }: VideoCardProps) {
         className="absolute inset-0 z-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
         aria-label={`Open ${video.filename}`}
       />
-      {/* Thumbnail Placeholder Section */}
+      {/* Thumbnail Section */}
       <div className="pointer-events-none relative z-10 flex aspect-video w-full items-center justify-center overflow-hidden border-b border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-[#070a12]">
+        {video.thumbnailUrl && (
+          <div
+            role="img"
+            aria-label={`Thumbnail for ${video.filename}`}
+            className="absolute inset-0 bg-cover bg-center transition-transform duration-300 group-hover:scale-[1.02]"
+            style={{ backgroundImage: `url(${JSON.stringify(video.thumbnailUrl).slice(1, -1)})` }}
+          />
+        )}
         {/* Subtle grid pattern background */}
-        <div className="absolute inset-0 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] dark:bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-40 group-hover:opacity-60 transition-opacity" />
+        {!video.thumbnailUrl && (
+          <div className="absolute inset-0 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] dark:bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-40 group-hover:opacity-60 transition-opacity" />
+        )}
+        {video.thumbnailUrl && <div className="absolute inset-0 bg-black/10 transition-colors group-hover:bg-black/25" />}
 
         {isReady ? (
           <div className="relative z-10 flex items-center justify-center">
@@ -119,6 +127,7 @@ export function VideoCard({ video, onRenamed }: VideoCardProps) {
             <span>{formatDuration(video.duration)}</span>
           </div>
         )}
+
       </div>
 
       {/* Card Body */}
@@ -177,30 +186,6 @@ export function VideoCard({ video, onRenamed }: VideoCardProps) {
             ID: <span className="text-slate-700 dark:text-slate-300 font-medium">{video.id}</span>
           </p>
         </div>
-
-        {/* Processing Details */}
-        {isProcessing && (
-          <div className="p-2.5 rounded-lg bg-sky-50 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/20 space-y-1 font-mono text-[11px]">
-            <div className="text-sky-700 dark:text-sky-400 font-semibold flex items-center gap-1.5">
-              <Sparkles className="h-3.5 w-3.5 animate-spin text-sky-600 dark:text-sky-400" />
-              <span>Transcode Pipeline Active</span>
-            </div>
-            <div className="text-slate-600 dark:text-slate-400 text-[10px] space-y-0.5">
-              {completedRenditions.map((r) => (
-                <div key={r.resolution} className="flex justify-between">
-                  <span>{r.resolution}:</span>
-                  <span className="text-emerald-600 dark:text-emerald-400 font-medium">Completed</span>
-                </div>
-              ))}
-              {activeRenditions.map((r) => (
-                <div key={r.resolution} className="flex justify-between">
-                  <span>{r.resolution}:</span>
-                  <span className="text-sky-600 dark:text-sky-400 animate-pulse font-medium">Processing</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
         {/* Card Footer */}
         <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] font-mono text-slate-500 dark:text-slate-400">

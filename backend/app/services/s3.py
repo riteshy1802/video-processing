@@ -258,18 +258,34 @@ class S3Service:
             logger.error(f"Unexpected error reading S3 text file {s3_key}: {e}")
             raise
 
-    def copy_object(self, source_key: str, destination_key: str) -> bool:
+    def copy_object(
+        self,
+        source_key: str,
+        destination_key: str,
+        content_type: Optional[str] = None,
+        cache_control: Optional[str] = None,
+    ) -> bool:
         """
         Copies an S3 object from source_key to destination_key within the same bucket.
         """
         try:
-            self.s3_client.copy_object(
-                Bucket=self.bucket,  # Use self.bucket
-                CopySource={
-                    "Bucket": self.bucket,  # Use self.bucket
+            copy_args: Dict[str, Any] = {
+                "Bucket": self.bucket,
+                "CopySource": {
+                    "Bucket": self.bucket,
                     "Key": source_key,
                 },
-                Key=destination_key,
+                "Key": destination_key,
+            }
+            if content_type or cache_control:
+                copy_args["MetadataDirective"] = "REPLACE"
+                if content_type:
+                    copy_args["ContentType"] = content_type
+                if cache_control:
+                    copy_args["CacheControl"] = cache_control
+
+            self.s3_client.copy_object(
+                **copy_args,
             )
             logger.info(f"Copied S3 object: {source_key} -> {destination_key}")
             return True

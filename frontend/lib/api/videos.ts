@@ -165,6 +165,8 @@ interface ApiVideoListItem {
   uploaded_at?: string;
   playback_url?: string;
   master_playlist_url?: string;
+  thumbnail_url?: string;
+  thumbnail_version?: number;
   renditions?: ApiRenditionListItem[];
 }
 
@@ -176,8 +178,12 @@ function mapVideoListItem(v: ApiVideoListItem): Video {
     resolution: typeof r.resolution === "number" ? `${r.resolution}p` : String(r.resolution).endsWith("p") ? String(r.resolution) : `${r.resolution}p`,
     status: (r.status || "ready").toLowerCase() as Rendition["status"],
     processingTime: typeof r.processing_time_seconds === "number" ? Math.round(r.processing_time_seconds) : typeof r.processingTime === "number" ? Math.round(r.processingTime) : undefined,
-    workerId: r.worker_id || `worker-${r.resolution}`,
-  }));
+    workerId: r.worker_id || undefined,
+  })).sort((a, b) => {
+    const resA = parseInt(String(a.resolution).replace(/\D/g, ""), 10) || 0;
+    const resB = parseInt(String(b.resolution).replace(/\D/g, ""), 10) || 0;
+    return resA - resB;
+  });
 
   return {
     id: v.id,
@@ -190,6 +196,8 @@ function mapVideoListItem(v: ApiVideoListItem): Video {
     status: (isReady ? "ready" : statusLower) as Video["status"],
     createdAt: v.uploaded_at || v.created_at,
     playbackUrl: v.playback_url || v.master_playlist_url,
+    thumbnailUrl: v.thumbnail_url,
+    thumbnailVersion: v.thumbnail_version || 0,
     renditions,
   };
 }
@@ -255,8 +263,12 @@ export const VideoAPI = {
           resolution: typeof r.resolution === "number" ? `${r.resolution}p` : String(r.resolution).endsWith("p") ? String(r.resolution) : `${r.resolution}p`,
           status: (r.status || "ready").toLowerCase() as any,
           processingTime: typeof r.processing_time_seconds === "number" ? Math.round(r.processing_time_seconds) : typeof r.processingTime === "number" ? Math.round(r.processingTime) : undefined,
-          workerId: r.worker_id || r.workerId || `worker-${r.resolution}`,
-        }));
+          workerId: r.worker_id || r.workerId || undefined,
+        })).sort((a: any, b: any) => {
+          const resA = parseInt(String(a.resolution).replace(/\D/g, ""), 10) || 0;
+          const resB = parseInt(String(b.resolution).replace(/\D/g, ""), 10) || 0;
+          return resA - resB;
+        });
 
         return {
           id: v.id,
@@ -269,6 +281,8 @@ export const VideoAPI = {
           status: (isReady ? "ready" : statusLower) as any,
           createdAt: v.created_at,
           playbackUrl: isReady ? (v.playback_url || v.master_playlist_url || v.original_url) : (v.playback_url || v.original_url),
+          thumbnailUrl: v.thumbnail_url,
+          thumbnailVersion: v.thumbnail_version || 0,
           renditions,
         };
       } catch (e) {
@@ -366,6 +380,47 @@ export const VideoAPI = {
     } catch (error: unknown) {
       if (axios.isAxiosError(error)) {
         throw new Error(error.response?.data?.detail || error.message || "Rename failed");
+      }
+      throw error;
+    }
+  },
+
+  async uploadThumbnail(
+    videoId: string,
+    file: File,
+    callbacks?: {
+      onUploadProgress?: (percent: number) => void;
+      onFinalizing?: () => void;
+    }
+  ): Promise<{ thumbnail_url: string; thumbnail_version: number }> {
+    if (videoId.startsWith("vid_demo_")) {
+      throw new Error("Demo videos do not have S3 thumbnail storage");
+    }
+
+    try {
+      const initiate = await apiClient.post(`/api/videos/${videoId}/thumbnail/upload`, {
+        content_type: file.type,
+        file_size_bytes: file.size,
+      });
+      await axios.put(initiate.data.upload_url, file, {
+        headers: { "Content-Type": file.type },
+        onUploadProgress: (progressEvent) => {
+          const total = progressEvent.total || file.size;
+          const percent = total > 0
+            ? Math.min(100, Math.round((progressEvent.loaded / total) * 100))
+            : 0;
+          callbacks?.onUploadProgress?.(percent);
+        },
+      });
+      callbacks?.onUploadProgress?.(100);
+      callbacks?.onFinalizing?.();
+      const complete = await apiClient.post(`/api/videos/${videoId}/thumbnail/complete`);
+      return complete.data;
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error)) {
+        throw new Error(
+          error.response?.data?.detail || error.message || "Thumbnail upload failed"
+        );
       }
       throw error;
     }

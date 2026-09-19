@@ -17,6 +17,10 @@ from app.schemas.video import (
     VideoDetailResponse,
 )
 from app.services.s3 import s3_service
+from app.services.thumbnail_service import (
+    build_thumbnail_url,
+    schedule_automatic_thumbnail,
+)
 from app.repositories.video_repository import video_repository
 from planner.producer import get_planner_producer, publish_planning_job
 
@@ -178,6 +182,21 @@ class VideoService:
                 f"Could not publish planning job for video {updated_video.id} to Kafka: {e}"
             )
 
+        # This starts an independent async task on the FastAPI event loop and
+        # returns immediately. It is auxiliary: all thumbnail errors are logged
+        # inside the task and cannot change the upload/transcoding result.
+        if updated_video.duration_seconds is not None:
+            schedule_automatic_thumbnail(
+                updated_video.id,
+                updated_video.s3_key,
+                updated_video.duration_seconds,
+            )
+        else:
+            logger.warning(
+                "Skipping automatic thumbnail for video %s because duration is unavailable",
+                updated_video.id,
+            )
+
         return CompleteUploadResponse(
             video_id=updated_video.id,
             status=updated_video.status,
@@ -212,6 +231,8 @@ class VideoService:
                 source_frame_rate=v.source_frame_rate,
                 playback_url=master_url,
                 master_playlist_url=master_url,
+                thumbnail_url=build_thumbnail_url(v.id, v.thumbnail_version),
+                thumbnail_version=v.thumbnail_version,
                 renditions=renditions_list,
             )
             result.append(res)
@@ -250,6 +271,8 @@ class VideoService:
             original_url=presigned_get_url,
             playback_url=playback_url,
             master_playlist_url=master_url,
+            thumbnail_url=build_thumbnail_url(video.id, video.thumbnail_version),
+            thumbnail_version=video.thumbnail_version,
             created_at=video.created_at,
             uploaded_at=video.uploaded_at,
             source_width=video.source_width,

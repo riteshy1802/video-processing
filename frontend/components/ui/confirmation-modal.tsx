@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Trash2, X } from "lucide-react";
 import { Button } from "./button";
 
@@ -13,6 +13,7 @@ interface ConfirmationModalProps {
   confirmText?: string;
   cancelText?: string;
   isDeleting?: boolean;
+  confirmationText?: string;
 }
 
 export function ConfirmationModal({
@@ -24,13 +25,22 @@ export function ConfirmationModal({
   confirmText = "Delete Video",
   cancelText = "Cancel",
   isDeleting = false,
+  confirmationText,
 }: ConfirmationModalProps) {
   const modalRef = useRef<HTMLDivElement | null>(null);
+  const [typedConfirmation, setTypedConfirmation] = useState("");
+  const isConfirmed = !confirmationText || typedConfirmation === confirmationText;
+
+  const handleClose = useCallback(() => {
+    if (isDeleting) return;
+    setTypedConfirmation("");
+    onClose();
+  }, [isDeleting, onClose]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && isOpen && !isDeleting) {
-        onClose();
+        handleClose();
       }
     };
     if (isOpen) {
@@ -41,7 +51,7 @@ export function ConfirmationModal({
       document.body.style.overflow = "unset";
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isOpen, isDeleting, onClose]);
+  }, [isOpen, isDeleting, handleClose]);
 
   if (!isOpen) return null;
 
@@ -50,7 +60,7 @@ export function ConfirmationModal({
       className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
       onClick={(e) => {
         if (e.target === e.currentTarget && !isDeleting) {
-          onClose();
+          handleClose();
         }
       }}
     >
@@ -60,7 +70,7 @@ export function ConfirmationModal({
       >
         {/* Close Button */}
         <button
-          onClick={onClose}
+          onClick={handleClose}
           disabled={isDeleting}
           className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/60 disabled:opacity-50 cursor-pointer"
         >
@@ -82,12 +92,34 @@ export function ConfirmationModal({
           </div>
         </div>
 
+        {confirmationText && (
+          <div className="space-y-2">
+            <label
+              htmlFor="delete-confirmation"
+              className="block text-xs leading-relaxed text-slate-600 dark:text-slate-400"
+            >
+              Type <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">{confirmationText}</span> to confirm.
+            </label>
+            <input
+              id="delete-confirmation"
+              autoFocus
+              autoComplete="off"
+              spellCheck={false}
+              value={typedConfirmation}
+              onChange={(event) => setTypedConfirmation(event.target.value)}
+              disabled={isDeleting}
+              className="h-10 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 font-mono text-xs text-slate-900 outline-none transition focus:border-rose-500 focus:ring-2 focus:ring-rose-500/15 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+              placeholder={confirmationText}
+            />
+          </div>
+        )}
+
         {/* Action Buttons */}
         <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-100 dark:border-slate-800/80">
           <Button
             variant="outline"
             size="md"
-            onClick={onClose}
+            onClick={handleClose}
             disabled={isDeleting}
           >
             {cancelText}
@@ -97,6 +129,7 @@ export function ConfirmationModal({
             size="md"
             onClick={onConfirm}
             isLoading={isDeleting}
+            disabled={!isConfirmed}
           >
             <Trash2 className="h-4 w-4" />
             <span>{confirmText}</span>

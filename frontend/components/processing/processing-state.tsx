@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { Video } from "@/types/video";
 import { VideoProcessingState } from "@/lib/hooks/use-video-processing-events";
 import { KafkaArchitectureDiagram, RenditionDetails } from "./kafka-architecture-diagram";
@@ -29,6 +30,7 @@ export function ProcessingState({
   onForcePlay,
 }: ProcessingStateProps) {
   const [selectedRenditionRes, setSelectedRenditionRes] = useState<string | null>(null);
+  const [detailsPortalTarget, setDetailsPortalTarget] = useState<HTMLElement | null>(null);
 
   // Calculate live readiness & chunk counts
   const renditions = processingState?.renditions?.length
@@ -56,49 +58,52 @@ export function ProcessingState({
     : null;
 
   useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      setDetailsPortalTarget(document.getElementById("rendition-details-panel-slot"));
+    });
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setSelectedRenditionRes(null);
     };
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, []);
 
   return (
-    <div className={cn(
-      "items-start font-sans",
-      selectedRenditionRes && "min-[1800px]:relative min-[1800px]:left-1/2 min-[1800px]:grid min-[1800px]:w-[calc(100%+28rem)] min-[1800px]:-translate-x-1/2 min-[1800px]:grid-cols-[minmax(0,1fr)_26rem] min-[1800px]:gap-8"
-    )}>
+    <div className="font-sans">
       <div className="min-w-0 space-y-6">
       {/* Real-time Processing Header Banner */}
-      <div className="rounded-2xl border border-sky-500/20 bg-gradient-to-r from-sky-950/40 via-slate-900/60 to-slate-950/40 p-6 shadow-lg backdrop-blur-md space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+      <div className="space-y-4 rounded-2xl border border-sky-200/80 bg-gradient-to-r from-sky-50 via-white to-emerald-50 p-6 shadow-sm dark:border-sky-500/20 dark:from-sky-950/40 dark:via-slate-900/60 dark:to-slate-950/40 dark:shadow-lg">
+        <div className="flex flex-col justify-between gap-4 border-b border-slate-200/80 pb-4 sm:flex-row sm:items-center dark:border-slate-800/80">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-400">
+            <div className="rounded-xl border border-sky-300 bg-sky-100 p-2.5 text-sky-600 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-400">
               <Activity className="h-5 w-5 animate-pulse" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-100 flex items-center gap-2 font-mono">
+              <h2 className="flex items-center gap-2 font-mono text-base font-bold text-slate-900 dark:text-slate-100">
                 <span>Distributed HLS Transcoding Pipeline</span>
               </h2>
-              <p className="text-xs text-slate-400 font-sans mt-0.5">
+              <p className="mt-0.5 font-sans text-xs text-slate-600 dark:text-slate-400">
                 Real-time Kafka chunk partition progress via Redis Pub/Sub SSE
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-3 shrink-0 flex-wrap">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-mono font-medium bg-slate-900/80 border-slate-800">
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 font-mono text-xs font-medium shadow-xs dark:border-slate-800 dark:bg-slate-900/80">
               <span className={cn("h-2 w-2 rounded-full shrink-0", isCompleted ? "bg-emerald-400" : isConnected ? "bg-emerald-400 animate-ping" : "bg-amber-400")} />
-              <span className={isCompleted || isConnected ? "text-emerald-400" : "text-amber-400"}>
+              <span className={isCompleted || isConnected ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}>
                 {isCompleted ? "Pipeline Complete" : isConnected ? "Live SSE Connected" : "Connecting SSE..."}
               </span>
             </div>
 
-            <div className="px-3 py-1.5 rounded-xl border border-sky-500/30 bg-sky-500/10 text-sky-300 text-xs font-mono font-bold">
+            <div className="rounded-xl border border-sky-300 bg-sky-100 px-3 py-1.5 font-mono text-xs font-bold text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300">
               {readyCount} / {renditions.length} Renditions Ready
             </div>
 
-            <div className="px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 text-xs font-mono font-bold">
+            <div className="rounded-xl border border-emerald-300 bg-emerald-100 px-3 py-1.5 font-mono text-xs font-bold text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
               Total Chunks: {completedChunks} / {totalChunks} ({Math.round(overallProgress)}%)
             </div>
           </div>
@@ -106,11 +111,11 @@ export function ProcessingState({
 
         {/* Overall Progress Bar */}
         <div className="space-y-1.5">
-          <div className="flex justify-between text-xs font-mono text-slate-400">
+          <div className="flex justify-between font-mono text-xs text-slate-600 dark:text-slate-400">
             <span>Overall Chunks Transcoded Progress</span>
-            <span className="text-emerald-400 font-bold">{Math.round(overallProgress)}%</span>
+            <span className="font-bold text-emerald-600 dark:text-emerald-400">{Math.round(overallProgress)}%</span>
           </div>
-          <div className="h-2.5 w-full rounded-full bg-slate-800/80 overflow-hidden p-0.5 border border-slate-700/50">
+          <div className="h-2.5 w-full overflow-hidden rounded-full border border-slate-300 bg-slate-200 p-0.5 dark:border-slate-700/50 dark:bg-slate-800/80">
             <div
               className="h-full rounded-full bg-gradient-to-r from-sky-500 via-teal-400 to-emerald-400 transition-all duration-500 relative overflow-hidden"
               style={{ width: `${Math.max(0, Math.min(100, overallProgress))}%` }}
@@ -125,16 +130,16 @@ export function ProcessingState({
 
       {/* Completion Countdown Banner */}
       {countdown !== null && (
-        <div className="rounded-2xl border border-emerald-500/40 bg-emerald-950/40 p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl text-emerald-200 animate-fade-in">
+        <div className="animate-fade-in flex flex-col items-center justify-between gap-4 rounded-2xl border border-emerald-300 bg-emerald-50 p-5 text-emerald-800 shadow-xl sm:flex-row dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-200">
           <div className="flex items-center gap-3">
             <div className="p-3 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 shrink-0">
               <Sparkles className="h-6 w-6 animate-spin" style={{ animationDuration: '3s' }} />
             </div>
             <div>
-              <h3 className="font-mono text-sm font-bold text-emerald-100 flex items-center gap-2">
+              <h3 className="flex items-center gap-2 font-mono text-sm font-bold text-emerald-900 dark:text-emerald-100">
                 <span>Transcoding Complete! Preparing HLS Player...</span>
               </h3>
-              <p className="text-xs text-emerald-300/80 mt-0.5 font-sans">
+              <p className="mt-0.5 font-sans text-xs text-emerald-700 dark:text-emerald-300/80">
                 All renditions ready. Redirecting to player in <span className="font-bold text-emerald-400 font-mono text-sm">{countdown}s</span>...
               </p>
             </div>
@@ -161,14 +166,15 @@ export function ProcessingState({
       />
       </div>
 
-      {selectedRenditionRes && (
-        <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-hidden bg-[#070a12] p-4 shadow-2xl min-[1800px]:sticky min-[1800px]:top-4 min-[1800px]:col-start-2 min-[1800px]:row-start-1 min-[1800px]:z-auto min-[1800px]:h-[min(44rem,calc(100vh-2rem))] min-[1800px]:w-auto min-[1800px]:max-w-none min-[1800px]:bg-transparent min-[1800px]:p-0 min-[1800px]:shadow-none">
+      {selectedRenditionRes && detailsPortalTarget && createPortal(
+        <div className="h-[36rem] overflow-hidden">
           <RenditionDetails
             rendition={selectedRendition}
             resolution={selectedRenditionRes}
             onClose={() => setSelectedRenditionRes(null)}
           />
-        </div>
+        </div>,
+        detailsPortalTarget
       )}
     </div>
   );

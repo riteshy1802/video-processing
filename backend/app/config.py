@@ -88,6 +88,20 @@ class Settings(BaseSettings):
         default="video-finalizers",
         description="Name of the consumer group for the finalizers doing final rendition (videos) aggregations",
     )
+    THUMBNAIL_FFMPEG_TIMEOUT_SECONDS: int = Field(
+        default=60,
+        gt=0,
+        description="Maximum time allowed to extract the single automatic thumbnail",
+    )
+    MAX_THUMBNAIL_UPLOAD_SIZE_BYTES: int = Field(
+        default=5 * 1024 * 1024,
+        gt=0,
+        description="Maximum allowed custom thumbnail upload size in bytes",
+    )
+    ALLOWED_THUMBNAIL_CONTENT_TYPES: List[str] = Field(
+        default=["image/jpeg", "image/png", "image/webp"],
+        description="Allowed custom thumbnail MIME types",
+    )
 
     SUPPORTED_RENDITIONS: List[int] = Field(
         default=[360, 480, 720, 1080, 1440],

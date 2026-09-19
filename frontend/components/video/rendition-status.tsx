@@ -8,15 +8,31 @@ interface RenditionStatusProps {
   className?: string;
 }
 
+function formatProcessingTime(seconds: number): string {
+  const totalSeconds = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(totalSeconds / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  return minutes > 0
+    ? `${minutes}m ${remainingSeconds}s`
+    : `${remainingSeconds}s`;
+}
+
 export function RenditionStatusList({
   renditions,
   className,
 }: RenditionStatusProps) {
   if (!renditions || renditions.length === 0) return null;
 
+  const sortedRenditions = [...renditions].sort((a, b) => {
+    const resA = parseInt(String(a.resolution).replace(/\D/g, ""), 10) || 0;
+    const resB = parseInt(String(b.resolution).replace(/\D/g, ""), 10) || 0;
+    return resA - resB;
+  });
+
   return (
     <div className={cn("grid grid-cols-1 sm:grid-cols-2 gap-3", className)}>
-      {renditions.map((rendition) => {
+      {sortedRenditions.map((rendition) => {
         const isProcessing = rendition.status === "processing";
         const isReady = rendition.status === "ready";
         const isFailed = rendition.status === "failed";
@@ -67,7 +83,7 @@ export function RenditionStatusList({
             <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
               <span>
                 {isProcessing && "Kafka Consumer Task Active"}
-                {isReady && (rendition.processingTime !== undefined && rendition.processingTime !== null ? `Completed in ${rendition.processingTime}s` : "Ready for streaming")}
+                {isReady && (rendition.processingTime !== undefined && rendition.processingTime !== null ? `Completed in ${formatProcessingTime(rendition.processingTime)}` : "Ready for streaming")}
                 {isQueued && "Waiting in Kafka Queue"}
                 {isFailed && (rendition.error || "Transcode error")}
               </span>

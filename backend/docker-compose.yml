@@ -1,0 +1,85 @@
+services:
+
+  api:
+    image: video-processing-backend:local
+    command: uvicorn app.main:app --host 0.0.0.0 --port 7500
+    env_file:
+      - .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "7500:7500"
+    networks:
+      - kafka_network
+
+  outbox:
+    image: video-processing-backend:local
+    command: python -m outbox.main
+    env_file:
+      - .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379/0
+    networks:
+      - kafka_network
+
+  reconciler:
+    image: video-processing-backend:local
+    command: python -m reconciler.main
+    env_file:
+      - .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379/0
+    networks:
+      - kafka_network
+
+  planner:
+    image: video-processing-backend:local
+    command: python -m planner.main
+    env_file:
+      - .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379/0
+    networks:
+      - kafka_network
+
+  worker:
+    image: video-processing-backend:local
+    command: python -m worker.main
+    env_file:
+      - .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379/0
+    networks:
+      - kafka_network
+
+  finalizer:
+    image: video-processing-backend:local
+    command: python -m finalizer.main
+    env_file:
+      - .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379/0
+    networks:
+      - kafka_network
+
+  video-finalizer:
+    image: video-processing-backend:local
+    command: python -m video_finalizer.main
+    env_file:
+      - .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379/0
+    networks:
+      - kafka_network
+
+networks:
+  kafka_network:
+    external: true
+    name: kafka_default

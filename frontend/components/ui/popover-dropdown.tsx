@@ -56,7 +56,7 @@ export function PopoverDropdown({
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 mt-1.5 w-44 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1.5 shadow-xl z-50 font-mono text-xs animate-in fade-in zoom-in-95">
+        <div className="absolute right-0 mt-1.5 w-44 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1.5 shadow-xl z-50 font-mono text-xs animate-in fade-in zoom-in-95">
           {options.map((opt) => {
             const isSelected = opt.value === value;
             return (
@@ -68,7 +68,7 @@ export function PopoverDropdown({
                   setIsOpen(false);
                 }}
                 className={cn(
-                  "w-full text-left px-2.5 py-1.5 rounded-lg flex items-center justify-between transition-colors cursor-pointer",
+                  "w-full text-left px-2.5 py-1.5 rounded-md flex items-center justify-between transition-colors cursor-pointer",
                   isSelected
                     ? "bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-400 font-bold"
                     : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/80"

@@ -33,7 +33,7 @@ export function LandingHero() {
 
             {/* Description */}
             <p className="text-base sm:text-lg text-slate-600 dark:text-slate-300 max-w-2xl mx-auto lg:mx-0 font-normal leading-relaxed">
-              Upload high-resolution videos and process them across a parallel FFmpeg cluster. Automatically generates multi-bitrate HLS streams (360p to 1440p) with zero-downtime worker failure handling and instant adaptive playback.
+              Parallel FFmpeg video transcoding into fault-tolerant, multi-bitrate HLS streams (360p to 1440p) with instant adaptive playback.
             </p>
 
             {/* CTA Action Buttons */}

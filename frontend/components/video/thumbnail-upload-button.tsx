@@ -12,7 +12,9 @@ const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 interface ThumbnailUploadButtonProps {
   videoId: string;
   filename: string;
+  onPreviewSelected: (file: File) => void;
   onUploaded: (thumbnailUrl: string, thumbnailVersion: number) => void;
+  onUploadFailed: () => void;
   className?: string;
   label?: string;
 }
@@ -20,7 +22,9 @@ interface ThumbnailUploadButtonProps {
 export function ThumbnailUploadButton({
   videoId,
   filename,
+  onPreviewSelected,
   onUploaded,
+  onUploadFailed,
   className,
   label = "Thumbnail",
 }: ThumbnailUploadButtonProps) {
@@ -49,6 +53,9 @@ export function ThumbnailUploadButton({
       return;
     }
 
+    // The playback page owns the temporary object URL so it can retain the
+    // selected image until the completion response confirms the replacement.
+    onPreviewSelected(file);
     setUploadProgress(0);
     setIsFinalizing(false);
     setIsUploading(true);
@@ -63,6 +70,7 @@ export function ThumbnailUploadButton({
       onUploaded(result.thumbnail_url, result.thumbnail_version);
       toast.success("Custom thumbnail updated");
     } catch (error) {
+      onUploadFailed();
       toast.error(error instanceof Error ? error.message : "Thumbnail upload failed");
     } finally {
       setIsUploading(false);

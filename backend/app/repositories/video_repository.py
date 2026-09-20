@@ -6,6 +6,7 @@ from sqlalchemy import func, select, update, or_
 from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.models.video import Video
+from app.models.rendition import Rendition
 from app.models.video_event import VideoEvent
 
 
@@ -47,13 +48,17 @@ class VideoRepository:
         return result.scalar_one_or_none()
 
     async def list_videos(
-        self, db: AsyncSession, limit: int = 100, offset: int = 0
+        self, db: AsyncSession, limit: int = 100, offset: int = 0, search: Optional[str] = None
     ) -> List[Video]:
         """Returns list of uploaded videos sorted by created_at descending."""
         stmt = (
             select(Video)
             .options(selectinload(Video.renditions))
-            .order_by(
+        )
+        if search and search.strip():
+            stmt = stmt.where(Video.original_filename.ilike(f"%{search.strip()}%"))
+        stmt = (
+            stmt.order_by(
                 func.coalesce(Video.uploaded_at, Video.created_at).desc(),
                 Video.id.desc(),
             )
@@ -71,6 +76,7 @@ class VideoRepository:
         uploaded_at: Optional[datetime] = None,
         processing_started_at: Optional[datetime] = None,
         error_message: Optional[str] = None,
+        commit: bool = True,
     ) -> Video:
         """Updates video status and timestamps."""
         video.status = status
@@ -82,8 +88,11 @@ class VideoRepository:
             video.error_message = error_message
             video.failed_at = datetime.now(timezone.utc)
 
-        await db.commit()
-        await db.refresh(video)
+        if commit:
+            await db.commit()
+            await db.refresh(video)
+        else:
+            await db.flush()
         return video
 
     async def update_filename(
@@ -152,6 +161,7 @@ class VideoRepository:
         event_metadata: Optional[Dict[str, Any]] = None,
         rendition_id: Optional[uuid.UUID] = None,
         chunk_id: Optional[uuid.UUID] = None,
+        commit: bool = True,
     ) -> VideoEvent:
         """Inserts VideoEvent audit log."""
         sanitized_meta = (
@@ -167,7 +177,10 @@ class VideoRepository:
             created_at=datetime.now(timezone.utc),
         )
         db.add(event)
-        await db.commit()
+        if commit:
+            await db.commit()
+        else:
+            await db.flush()
         return event
 
     async def get_status(
@@ -189,6 +202,46 @@ class VideoRepository:
         stmt = select(Video.status).where(Video.id == video_id).with_for_update()
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_by_id_for_update(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> Video | None:
+        stmt = select(Video).where(Video.id == video_id).with_for_update()
+        return (await db.execute(stmt)).scalar_one_or_none()
+
+    async def mark_failing(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+        error_message: str,
+    ) -> bool:
+        """Transition any active pipeline stage to durable failure shutdown."""
+        result = await db.execute(
+            update(Video)
+            .where(
+                Video.id == video_id,
+                Video.status.in_(
+                    ["UPLOADED", "PROCESSING", "FINALIZING", "CANCELLING"]
+                ),
+            )
+            .values(status="FAILING", error_message=error_message)
+        )
+        return result.rowcount == 1
+
+    async def mark_failed(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> bool:
+        """Finalize failure only after all active chunks have stopped."""
+        result = await db.execute(
+            update(Video)
+            .where(Video.id == video_id, Video.status == "FAILING")
+            .values(status="FAILED", failed_at=datetime.now(timezone.utc))
+        )
+        return result.rowcount == 1
 
     async def mark_cancelling(self, db: AsyncSession, video_id: uuid.UUID) -> bool:
         """
@@ -230,6 +283,103 @@ class VideoRepository:
         )
         result = await db.execute(stmt)
         return result.rowcount == 1
+
+    async def release_finalization_for_retry(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+    ) -> bool:
+        """Make a retryable video-finalizer job claimable again."""
+        stmt = (
+            update(Video)
+            .where(
+                Video.id == video_id,
+                Video.status == "FINALIZING",
+            )
+            .values(
+                status="PROCESSING",
+                finalizing_started_at=None,
+            )
+        )
+        result = await db.execute(stmt)
+        if result.rowcount == 1:
+            await db.commit()
+            return True
+
+        current_status = await self.get_status(db, video_id)
+        await db.rollback()
+        return current_status == "PROCESSING"
+
+    async def redrive_planning(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+        commit: bool = True,
+    ) -> bool:
+        """Restore a failed planner job without reopening terminal cancellation."""
+        video = (
+            await db.execute(
+                select(Video).where(Video.id == video_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if video is None or video.status in {"CANCELLING", "CANCELLED", "READY"}:
+            await db.rollback()
+            return False
+        if video.status in {"UPLOADED", "PROCESSING"}:
+            return True
+        if video.status != "FAILED":
+            await db.rollback()
+            return False
+
+        has_renditions = (
+            await db.execute(
+                select(Rendition.id)
+                .where(Rendition.video_id == video_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none() is not None
+        video.status = "PROCESSING" if has_renditions else "UPLOADED"
+        video.error_message = None
+        video.failed_at = None
+        video.completed_at = None
+        if commit:
+            await db.commit()
+        else:
+            await db.flush()
+        return True
+
+    async def redrive_finalization(
+        self,
+        db: AsyncSession,
+        video_id: uuid.UUID,
+        commit: bool = True,
+    ) -> bool:
+        """Make terminal/stuck video finalization manually claimable again."""
+        result = await db.execute(
+            update(Video)
+            .where(
+                Video.id == video_id,
+                Video.status.in_(["FINALIZING", "FAILED"]),
+            )
+            .values(
+                status="PROCESSING",
+                finalizing_started_at=None,
+                completed_at=None,
+                failed_at=None,
+                error_message=None,
+            )
+        )
+        if result.rowcount == 1:
+            if commit:
+                await db.commit()
+            else:
+                await db.flush()
+            return True
+
+        current_status = await self.get_status(db, video_id)
+        if current_status != "PROCESSING":
+            await db.rollback()
+        return current_status == "PROCESSING"
 
     async def mark_cancelled(
         self,

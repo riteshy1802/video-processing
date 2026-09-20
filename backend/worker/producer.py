@@ -32,8 +32,11 @@ def get_worker_producer() -> Optional[KafkaProducer]:
     return _producer_instance
 
 
-def publish_chunk(producer: KafkaProducer, chunk_id: str):
-    message = {"chunk_id": str(chunk_id)}
+def publish_chunk(producer: KafkaProducer, chunk_id: str, attempt: int = 1):
+    message = {
+        "chunk_id": str(chunk_id),
+        "attempt": attempt
+    }
     future = producer.send(
         settings.KAFKA_WORKER_TOPIC,
         key=str(chunk_id).encode("utf-8"),

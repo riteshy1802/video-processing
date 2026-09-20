@@ -315,9 +315,11 @@ class S3Service:
             logger.error(f"Failed to upload text file {s3_key}: {e}")
             raise
 
-    def delete_prefix(self, prefix: str) -> None:
+    def delete_prefix(self, prefix: str) -> int:
+        """Delete every current object beneath a prefix and return the count."""
         try:
             prefix = prefix.rstrip("/") + "/"
+            deleted_count = 0
 
             paginator = self.s3_client.get_paginator("list_objects_v2")
 
@@ -330,12 +332,22 @@ class S3Service:
                 if not objects:
                     continue
 
-                self.s3_client.delete_objects(
+                response = self.s3_client.delete_objects(
                     Bucket=self.bucket,
                     Delete={"Objects": [{"Key": obj["Key"]} for obj in objects]},
                 )
+                errors = response.get("Errors", [])
+                if errors:
+                    failed_keys = ", ".join(
+                        str(error.get("Key", "unknown")) for error in errors[:5]
+                    )
+                    raise RuntimeError(
+                        f"S3 rejected deletion for objects under {prefix}: {failed_keys}"
+                    )
+                deleted_count += len(objects)
 
-            logger.info(f"Deleted S3 prefix: {prefix}")
+            logger.info(f"Deleted {deleted_count} S3 objects under prefix: {prefix}")
+            return deleted_count
 
         except Exception as e:
             logger.error(f"Failed to delete S3 prefix {prefix}: {e}")

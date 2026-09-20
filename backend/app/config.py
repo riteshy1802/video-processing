@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
-from typing import List
+from typing import List, Literal
+from urllib.parse import urlsplit
 
 import os
 
@@ -12,6 +13,28 @@ class Settings(BaseSettings):
     DATABASE_URL: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/postgres",
         description="PostgreSQL Connection String (from Supabase)",
+    )
+    DATABASE_POOL_MODE: Literal["auto", "transaction", "direct"] = Field(
+        default="auto",
+        description=(
+            "Use NullPool for transaction poolers, a bounded SQLAlchemy pool for "
+            "direct/session connections, or infer Supabase transaction mode from port 6543"
+        ),
+    )
+    DATABASE_POOL_SIZE: int = Field(
+        default=2,
+        ge=1,
+        description="Per-process pool size for direct/session database connections",
+    )
+    DATABASE_MAX_OVERFLOW: int = Field(
+        default=0,
+        ge=0,
+        description="Per-process overflow for direct/session database connections",
+    )
+    DATABASE_POOL_TIMEOUT_SECONDS: float = Field(
+        default=30.0,
+        gt=0,
+        description="Connection checkout timeout for direct/session pools",
     )
     AWS_REGION: str = Field(
         default="us-east-1", description="AWS Region for S3 and AWS services"
@@ -50,7 +73,7 @@ class Settings(BaseSettings):
             "video/quicktime",
             "video/x-matroska",
             "video/webm",
-            "video/avi",
+            "video/x-m4v",
             "video/mpeg",
         ],
         description="Allowed video MIME types",
@@ -61,12 +84,18 @@ class Settings(BaseSettings):
     KAFKA_PLANNER_TOPIC: str = Field(
         default="planner.jobs", description="Name of the planner topic"
     )
+    KAFKA_PLANNER_DLQ_TOPIC: str = Field(
+        default="planner.jobs.dlq", description="Planner dead-letter topic"
+    )
     KAFKA_PLANNER_GROUP_ID: str = Field(
         default="video-planners",
         description="Name of the consumer group for the planner",
     )
     KAFKA_WORKER_TOPIC: str = Field(
         default="transcode.jobs", description="Name of the worker topic"
+    )
+    KAFKA_WORKER_DLQ_TOPIC: str = Field(
+        default="transcode.jobs.dlq", description="Transcode dead-letter topic"
     )
     KAFKA_WORKER_GROUP_ID: str = Field(
         default="video-transcoders",
@@ -76,6 +105,9 @@ class Settings(BaseSettings):
         default="finalize.jobs",
         description="Name of the finalizer (rendition specific) topic",
     )
+    KAFKA_FINALIZE_DLQ_TOPIC: str = Field(
+        default="finalize.jobs.dlq", description="Rendition finalizer dead-letter topic"
+    )
     KAFKA_FINALIZE_GROUP_ID: str = Field(
         default="video-finalizers",
         description="Name of the consumer group for the finalizers doing final chunk aggregations",
@@ -83,6 +115,9 @@ class Settings(BaseSettings):
     KAFKA_FINALIZE_VIDEO_TOPIC: str = Field(
         default="video.finalize.jobs",
         description="Name of the finalizers partition doing final rendition (videos) aggregations",
+    )
+    KAFKA_FINALIZE_VIDEO_DLQ_TOPIC: str = Field(
+        default="finalize.video.jobs.dlq", description="Video finalizer dead-letter topic"
     )
     KAFKA_FINALIZE_VIDEO_GROUP_ID: str = Field(
         default="video-finalizers",
@@ -113,6 +148,36 @@ class Settings(BaseSettings):
     CHUNK_DURATION_SECONDS: int = Field(
         default=300, description="The duration width of a chunk generated"
     )
+    TRANSCODE_LEASE_DURATION_SECONDS: int = Field(
+        default=120,
+        gt=0,
+        description="Duration of a transcode chunk ownership lease",
+    )
+    TRANSCODE_LEASE_HEARTBEAT_SECONDS: int = Field(
+        default=30,
+        gt=0,
+        description="Interval between transcode chunk lease heartbeats",
+    )
+    OUTBOX_POLL_INTERVAL_SECONDS: float = Field(
+        default=1.0,
+        gt=0,
+        description="Delay between transactional outbox polls when no work is available",
+    )
+    RECONCILER_INTERVAL_SECONDS: float = Field(
+        default=30.0,
+        gt=0,
+        description="Delay between pipeline reconciliation passes",
+    )
+    RECONCILER_REQUEUE_AFTER_SECONDS: int = Field(
+        default=300,
+        gt=0,
+        description="Minimum delay before reasserting the same recovery job",
+    )
+    RECONCILER_BATCH_SIZE: int = Field(
+        default=100,
+        gt=0,
+        description="Maximum rows handled per reconciliation category and pass",
+    )
     VIDEO_FINALIZATION_TIMEOUT_SECONDS: int = Field(
         default=40,
         description="Timeout in seconds before a FINALIZING video job is considered stale and reclaimed",
@@ -131,6 +196,21 @@ class Settings(BaseSettings):
         if url.startswith("postgres://"):
             return url.replace("postgres://", "postgresql+asyncpg://", 1)
         return url
+
+    @property
+    def use_null_database_pool(self) -> bool:
+        """Use no client-side pool when Supabase/Supavisor pools transactions."""
+        if self.DATABASE_POOL_MODE == "transaction":
+            return True
+        if self.DATABASE_POOL_MODE == "direct":
+            return False
+
+        parsed = urlsplit(self.DATABASE_URL)
+        return bool(
+            parsed.hostname
+            and parsed.hostname.endswith(".pooler.supabase.com")
+            and parsed.port == 6543
+        )
 
     @property
     def sync_database_url(self) -> str:

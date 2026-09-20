@@ -58,6 +58,15 @@ export function VideoStatusBadge({
         </Badge>
       );
 
+    case "failing":
+    case "FAILING":
+      return (
+        <Badge variant="rose" className={cn("gap-1.5 font-semibold", className)}>
+          {showIcon && <AlertCircle className="h-3 w-3" />}
+          <span>Failing</span>
+        </Badge>
+      );
+
     case "cancelled":
     case "CANCELLED":
       return (
@@ -76,6 +85,7 @@ export function VideoStatusBadge({
       );
 
     case "failed":
+    case "FAILED":
       return (
         <Badge variant="rose" className={cn("gap-1.5 font-semibold", className)}>
           {showIcon && <AlertCircle className="h-3 w-3" />}

@@ -14,6 +14,7 @@ const apiClient = axios.create({
 
 // Mock dataset displaying parallel Kafka worker consumers based on source resolution mapping
 const MOCK_VIDEOS: Video[] = [
+  /* Mock videos disabled so they are not rendered in the video grid.
   {
     id: "vid_demo_01",
     filename: "infrastructure_overview_1080p.mp4",
@@ -73,6 +74,7 @@ const MOCK_VIDEOS: Video[] = [
       { resolution: "1440p", status: "ready", workerId: "worker-05", processingTime: 92 },
     ],
   },
+  */
 ];
 
 function getStoredVideos(): Video[] {
@@ -85,7 +87,7 @@ function getStoredVideos(): Video[] {
     }
     const parsed: Video[] = JSON.parse(data);
     // Ensure demo cards have the latest working playback URLs and ready status
-    return parsed.map((item) => {
+    return parsed.filter((item) => !item.id.startsWith("vid_demo_")).map((item) => {
       const demoMatch = MOCK_VIDEOS.find((m) => m.id === item.id);
       if (demoMatch) {
         return {
@@ -167,18 +169,29 @@ interface ApiVideoListItem {
   master_playlist_url?: string;
   thumbnail_url?: string;
   thumbnail_version?: number;
+  error_message?: string;
   renditions?: ApiRenditionListItem[];
 }
 
 function mapVideoListItem(v: ApiVideoListItem): Video {
+  if (!v) {
+    return {
+      id: `vid_${Math.random().toString(36).substring(2, 9)}`,
+      filename: "Untitled.mp4",
+      size: 0,
+      status: "ready",
+      createdAt: new Date().toISOString(),
+      renditions: [],
+    };
+  }
   const statusLower = (v.status || "").toLowerCase();
   const isReady = statusLower === "ready";
-  const rawRenditions = v.renditions || [];
+  const rawRenditions = Array.isArray(v.renditions) ? v.renditions : [];
   const renditions: Rendition[] = rawRenditions.map((r) => ({
-    resolution: typeof r.resolution === "number" ? `${r.resolution}p` : String(r.resolution).endsWith("p") ? String(r.resolution) : `${r.resolution}p`,
-    status: (r.status || "ready").toLowerCase() as Rendition["status"],
-    processingTime: typeof r.processing_time_seconds === "number" ? Math.round(r.processing_time_seconds) : typeof r.processingTime === "number" ? Math.round(r.processingTime) : undefined,
-    workerId: r.worker_id || undefined,
+    resolution: typeof r?.resolution === "number" ? `${r.resolution}p` : String(r?.resolution || "").endsWith("p") ? String(r?.resolution) : `${r?.resolution}p`,
+    status: (r?.status || "ready").toLowerCase() as Rendition["status"],
+    processingTime: typeof r?.processing_time_seconds === "number" ? Math.round(r.processing_time_seconds) : typeof r?.processingTime === "number" ? Math.round(r.processingTime) : undefined,
+    workerId: r?.worker_id || undefined,
   })).sort((a, b) => {
     const resA = parseInt(String(a.resolution).replace(/\D/g, ""), 10) || 0;
     const resB = parseInt(String(b.resolution).replace(/\D/g, ""), 10) || 0;
@@ -186,28 +199,31 @@ function mapVideoListItem(v: ApiVideoListItem): Video {
   });
 
   return {
-    id: v.id,
-    filename: v.original_filename,
-    size: v.file_size_bytes,
-    duration: v.duration_seconds,
-    width: v.source_width,
-    height: v.source_height,
-    mimeType: v.content_type,
+    id: v.id || `vid_${Math.random().toString(36).substring(2, 9)}`,
+    filename: v.original_filename || "Untitled.mp4",
+    size: typeof v.file_size_bytes === "number" ? v.file_size_bytes : 0,
+    duration: typeof v.duration_seconds === "number" ? v.duration_seconds : undefined,
+    width: typeof v.source_width === "number" ? v.source_width : undefined,
+    height: typeof v.source_height === "number" ? v.source_height : undefined,
+    mimeType: v.content_type || undefined,
     status: (isReady ? "ready" : statusLower) as Video["status"],
-    createdAt: v.uploaded_at || v.created_at,
-    playbackUrl: v.playback_url || v.master_playlist_url,
-    thumbnailUrl: v.thumbnail_url,
+    createdAt: v.uploaded_at || v.created_at || new Date().toISOString(),
+    playbackUrl: v.playback_url || v.master_playlist_url || undefined,
+    thumbnailUrl: v.thumbnail_url || undefined,
     thumbnailVersion: v.thumbnail_version || 0,
+    errorMessage: v.error_message || undefined,
     renditions,
   };
 }
 
 export const VideoAPI = {
-  async getVideosPage(limit = 9, offset = 0): Promise<VideoPage> {
+  async getVideosPage(limit = 9, offset = 0, search = ""): Promise<VideoPage> {
     try {
-      const res = await apiClient.get<ApiVideoListItem[]>("/api/videos", {
-        params: { limit, offset },
-      });
+      const params: Record<string, any> = { limit, offset };
+      if (search && search.trim()) {
+        params.search = search.trim();
+      }
+      const res = await apiClient.get<ApiVideoListItem[]>("/api/videos", { params });
       const videos = res.data.map(mapVideoListItem);
       const hasMoreHeader = res.headers["x-has-more"];
       const nextOffsetHeader = Number(res.headers["x-next-offset"]);
@@ -218,9 +234,13 @@ export const VideoAPI = {
       };
     } catch (error) {
       console.warn("FastAPI backend not reachable, using local storage demo dataset", error);
-      const storedVideos = getStoredVideos().sort(
+      let storedVideos = getStoredVideos().sort(
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
+      if (search && search.trim()) {
+        const query = search.trim().toLowerCase();
+        storedVideos = storedVideos.filter((v) => v.filename.toLowerCase().includes(query));
+      }
       const videos = storedVideos.slice(offset, offset + limit);
       return {
         videos,
@@ -283,6 +303,7 @@ export const VideoAPI = {
           playbackUrl: isReady ? (v.playback_url || v.master_playlist_url || v.original_url) : (v.playback_url || v.original_url),
           thumbnailUrl: v.thumbnail_url,
           thumbnailVersion: v.thumbnail_version || 0,
+          errorMessage: v.error_message || undefined,
           renditions,
         };
       } catch (e) {

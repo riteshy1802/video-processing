@@ -56,6 +56,27 @@ def test_create_video_validation():
     assert response.status_code == 400
     assert "Unsupported content type" in response.json()["detail"]
 
+    # AVI is unsupported even when the caller spoofs an otherwise allowed MIME.
+    response = client.post(
+        "/api/videos",
+        json={
+            "filename": "unsupported.avi",
+            "content_type": "video/mp4",
+            "file_size_bytes": 1024,
+        },
+    )
+    assert response.status_code == 400
+
+    response = client.post(
+        "/api/videos",
+        json={
+            "filename": "unsupported.mp4",
+            "content_type": "video/x-msvideo",
+            "file_size_bytes": 1024,
+        },
+    )
+    assert response.status_code == 400
+
     # File size too large
     response = client.post(
         "/api/videos",
@@ -72,12 +93,12 @@ def test_create_video_validation():
 @patch("app.services.s3.s3_service.generate_presigned_put_url")
 @patch("app.services.s3.s3_service.verify_object_exists")
 @patch("app.services.s3.s3_service.generate_presigned_get_url")
-@patch("app.services.s3.s3_service.delete_object")
+@patch("app.services.s3.s3_service.delete_prefix")
 def test_full_upload_lifecycle(mock_delete, mock_get_url, mock_verify, mock_put_url):
     mock_put_url.return_value = "https://test-bucket.s3.amazonaws.com/videos/mock/original/test.mp4?presigned=put"
     mock_get_url.return_value = "https://test-bucket.s3.amazonaws.com/videos/mock/original/test.mp4?presigned=get"
     mock_verify.return_value = {"content_length": 1048576, "content_type": "video/mp4"}
-    mock_delete.return_value = True
+    mock_delete.return_value = 1
 
     # Step 1: Initiate video upload
     create_res = client.post(
@@ -138,6 +159,7 @@ def test_full_upload_lifecycle(mock_delete, mock_get_url, mock_verify, mock_put_
     # Step 6: Delete video
     delete_res = client.delete(f"/api/videos/{video_id}")
     assert delete_res.status_code == 204
+    mock_delete.assert_called_once_with(f"videos/{video_id}")
 
     # Verify video is no longer found
     detail_after_res = client.get(f"/api/videos/{video_id}")

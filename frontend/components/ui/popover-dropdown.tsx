@@ -45,7 +45,7 @@ export function PopoverDropdown({
         type="button"
         onClick={() => setIsOpen(!isOpen)}
         className={cn(
-          "flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl border text-xs font-mono font-semibold transition-all cursor-pointer shadow-xs",
+          "flex items-center justify-between gap-2 px-3 py-2.5 rounded-sm border text-xs font-mono font-semibold transition-all cursor-pointer shadow-xs",
           "bg-slate-50 dark:bg-[#0b0f19] border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 hover:border-slate-300 dark:hover:border-slate-700",
           isOpen && "border-sky-500 ring-2 ring-sky-500/10",
           className

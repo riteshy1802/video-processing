@@ -1,16 +1,41 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 from typing import AsyncGenerator
+from uuid import uuid4
 from app.config import settings
 
-# Create async engine for FastAPI database interactions
+
+def _engine_options() -> dict:
+    """Avoid multiplying client-side pools across independent consumers."""
+    if settings.use_null_database_pool:
+        return {
+            "poolclass": NullPool,
+            "connect_args": {
+                # asyncpg's own statement cache. Transaction-pooled server
+                # connections must not inherit cached client statements.
+                "statement_cache_size": 0,
+                # SQLAlchemy's asyncpg DBAPI prepared-statement cache.
+                "prepared_statement_cache_size": 0,
+                # SQLAlchemy's asyncpg dialect always prepares executions,
+                # even with its cache disabled. Unique names prevent collisions
+                # when a transaction pooler assigns a reused server connection.
+                "prepared_statement_name_func": lambda: f"__asyncpg_{uuid4()}__",
+            },
+        }
+    return {
+        "pool_pre_ping": True,
+        "pool_size": settings.DATABASE_POOL_SIZE,
+        "max_overflow": settings.DATABASE_MAX_OVERFLOW,
+        "pool_timeout": settings.DATABASE_POOL_TIMEOUT_SECONDS,
+    }
+
+
+# Transaction poolers own connection reuse. Direct/local connections retain a
+# deliberately small, environment-configurable per-process SQLAlchemy pool.
 async_engine = create_async_engine(
     settings.async_database_url,
-    echo=False,
-    future=True,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    **_engine_options(),
 )
 
 # Async session factory

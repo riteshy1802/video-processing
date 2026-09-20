@@ -33,8 +33,12 @@ def get_planner_producer() -> Optional[KafkaProducer]:
 def publish_planning_job(
     producer: KafkaProducer,
     video_id: str,
+    attempt: int = 1,
 ):
-    message = {"video_id": video_id}
+    message = {
+        "video_id": video_id,
+        "attempt": attempt
+    }
 
     future = producer.send(settings.KAFKA_PLANNER_TOPIC, value=message)
 

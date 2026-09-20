@@ -106,6 +106,7 @@ class VideoResponse(BaseModel):
     master_playlist_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
     thumbnail_version: int = 0
+    error_message: Optional[str] = None
     renditions: List[RenditionResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
@@ -123,6 +124,7 @@ class VideoDetailResponse(BaseModel):
     master_playlist_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
     thumbnail_version: int = 0
+    error_message: Optional[str] = None
     created_at: datetime
     uploaded_at: Optional[datetime] = None
     source_width: Optional[int] = None

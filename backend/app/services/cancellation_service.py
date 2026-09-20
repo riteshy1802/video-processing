@@ -1,6 +1,5 @@
 import logging
 import uuid
-import asyncio
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,10 +8,7 @@ from app.repositories.chunk_repository import chunk_repository
 from app.repositories.rendition_repository import rendition_repository
 from app.repositories.video_repository import video_repository
 from app.services.redis_publisher import publish_video_cancelled
-from video_finalizer.producer import (
-    get_video_finalizer_producer,
-    publish_video_finalizer_job,
-)
+from app.services.outbox_service import enqueue_video_finalizer_job
 
 logger = logging.getLogger("cancellation_service")
 
@@ -22,13 +18,14 @@ class CancellationSettlement:
     status: str
     chunk_transitioned: bool = False
     video_transitioned: bool = False
-    finalization_published: bool = False
+    finalization_queued: bool = False
 
 
 async def settle_video_cancellation(
     db: AsyncSession,
     video_id: uuid.UUID,
     cancelled_chunk_id: uuid.UUID | None = None,
+    worker_id: str | None = None,
 ) -> CancellationSettlement:
     """Idempotently settle cancellation while serializing competing workers."""
     video_status = await video_repository.get_status_for_update(db, video_id)
@@ -42,7 +39,9 @@ async def settle_video_cancellation(
     chunk_transitioned = False
     if cancelled_chunk_id is not None:
         chunk_transitioned = await chunk_repository.mark_cancelled(
-            db, cancelled_chunk_id
+            db,
+            cancelled_chunk_id,
+            worker_id,
         )
 
     processing_count = await chunk_repository.count_processing_chunks_for_video(
@@ -70,30 +69,14 @@ async def settle_video_cancellation(
 
     if all_chunks_done and all_renditions_ready:
         continued = await video_repository.continue_cancelled_completion(db, video_id)
-        await db.commit()
-        finalization_published = False
+        finalization_queued = False
         if continued:
-            try:
-                producer = get_video_finalizer_producer()
-                if producer is None:
-                    raise RuntimeError("video finalizer producer is unavailable")
-                await asyncio.to_thread(
-                    publish_video_finalizer_job,
-                    producer,
-                    str(video_id),
-                )
-                await asyncio.to_thread(producer.flush)
-                finalization_published = True
-            except Exception:
-                logger.error(
-                    "Could not publish finalization for cancellation race video=%s",
-                    video_id,
-                    exc_info=True,
-                )
+            finalization_queued = await enqueue_video_finalizer_job(db, video_id)
+        await db.commit()
         return CancellationSettlement(
             status="PROCESSING",
             chunk_transitioned=chunk_transitioned,
-            finalization_published=finalization_published,
+            finalization_queued=finalization_queued,
         )
 
     await rendition_repository.mark_cancelling_as_cancelled(db, video_id)

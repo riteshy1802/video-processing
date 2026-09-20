@@ -16,6 +16,20 @@ topics = [
     NewTopic(
         name=settings.KAFKA_FINALIZE_VIDEO_TOPIC, num_partitions=3, replication_factor=1
     ),
+    NewTopic(
+        name=settings.KAFKA_PLANNER_DLQ_TOPIC, num_partitions=3, replication_factor=1
+    ),
+    NewTopic(
+        name=settings.KAFKA_WORKER_DLQ_TOPIC, num_partitions=3, replication_factor=1
+    ),
+    NewTopic(
+        name=settings.KAFKA_FINALIZE_DLQ_TOPIC, num_partitions=3, replication_factor=1
+    ),
+    NewTopic(
+        name=settings.KAFKA_FINALIZE_VIDEO_DLQ_TOPIC,
+        num_partitions=3,
+        replication_factor=1,
+    ),
 ]
 missing_topics = [topic for topic in topics if topic.name not in existing_topics]
 if missing_topics:

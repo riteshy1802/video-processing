@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { useDropzone } from "react-dropzone";
+import { FileRejection, useDropzone } from "react-dropzone";
 import { Upload, FileVideo, AlertCircle, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -65,7 +65,7 @@ export function VideoDropzone({ onFileSelect, disabled = false }: VideoDropzoneP
   );
 
   const onDrop = useCallback(
-    (acceptedFiles: File[], rejectedFiles: any[]) => {
+    (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {
       if (rejectedFiles.length > 0) {
         setError("Invalid file type. Please upload a valid video file (MP4, MOV, MKV, WebM).");
         return;
@@ -81,7 +81,7 @@ export function VideoDropzone({ onFileSelect, disabled = false }: VideoDropzoneP
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
-      "video/*": [".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"],
+      "video/*": [".mp4", ".mov", ".mkv", ".webm", ".m4v", ".mpeg", ".mpg"],
     },
     maxFiles: 1,
     disabled: disabled || isReading,
@@ -126,7 +126,7 @@ export function VideoDropzone({ onFileSelect, disabled = false }: VideoDropzoneP
                 : "Drag & drop your video file"}
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Supports <span className="font-mono font-medium text-slate-700 dark:text-slate-300">MP4, MOV, MKV, WebM, AVI</span> up to 5GB
+              Supports <span className="font-mono font-medium text-slate-700 dark:text-slate-300">MP4, MOV, MKV, WebM, M4V, MPEG</span> up to 5GB
             </p>
           </div>
 

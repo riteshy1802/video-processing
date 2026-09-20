@@ -1,7 +1,7 @@
+import asyncio
 import uuid
 import logging
 import os
-import asyncio
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import HTTPException, status
@@ -25,12 +25,12 @@ from app.services.thumbnail_service import (
 from app.repositories.video_repository import video_repository
 from app.repositories.chunk_repository import chunk_repository
 from app.repositories.rendition_repository import rendition_repository
-from planner.producer import get_planner_producer, publish_planning_job
-from worker.producer import get_worker_producer, publish_chunk
-from worker.producer import publish_finalize_jobs_for_each_rendition
-from video_finalizer.producer import (
-    get_video_finalizer_producer,
-    publish_video_finalizer_job,
+from app.repositories.outbox_repository import outbox_repository
+from app.services.outbox_service import (
+    enqueue_planner_job,
+    enqueue_rendition_finalizer_job,
+    enqueue_transcode_job,
+    enqueue_video_finalizer_job,
 )
 from app.services.redis_publisher import (
     publish_event_async,
@@ -39,6 +39,18 @@ from app.services.redis_publisher import (
 from app.services.cancellation_service import settle_video_cancellation
 
 logger = logging.getLogger("video_service")
+
+AVI_CONTENT_TYPES = {
+    "video/avi",
+    "video/x-msvideo",
+    "video/msvideo",
+    "application/x-troff-msvideo",
+}
+
+
+def _is_avi(filename: str, content_type: str) -> bool:
+    normalized_type = content_type.partition(";")[0].strip().lower()
+    return filename.strip().lower().endswith(".avi") or normalized_type in AVI_CONTENT_TYPES
 
 
 def build_master_playlist_url(video_id: uuid.UUID | str) -> Optional[str]:
@@ -75,13 +87,20 @@ class VideoService:
     ) -> CreateVideoResponse:
         """Validates payload, creates video record with PENDING_UPLOAD, and returns S3 presigned PUT URL."""
         # 1. Content type validation
+        normalized_content_type = req.content_type.partition(";")[0].strip().lower()
+        allowed_content_types = {
+            content_type.lower() for content_type in settings.ALLOWED_CONTENT_TYPES
+        }
         if (
-            not req.content_type.startswith("video/")
-            and req.content_type not in settings.ALLOWED_CONTENT_TYPES
+            _is_avi(req.filename, normalized_content_type)
+            or normalized_content_type not in allowed_content_types
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported content type '{req.content_type}'. Must be a valid video MIME type.",
+                detail=(
+                    f"Unsupported content type or video format for '{req.filename}' "
+                    f"({req.content_type}). Allowed formats are MP4, MOV, MKV, WebM, M4V, and MPEG."
+                ),
             )
 
         # 2. File size validation
@@ -142,12 +161,28 @@ class VideoService:
     async def complete_upload(
         self, db: AsyncSession, video_id: uuid.UUID
     ) -> CompleteUploadResponse:
-        """Verifies S3 object existence via HeadObject, marks video as UPLOADED, and publishes Kafka planning job."""
-        video = await video_repository.get_by_id(db, video_id)
+        """Verify S3, mark the upload complete, and queue planning atomically."""
+        video = await video_repository.get_by_id_for_update(db, video_id)
         if not video:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Video asset with ID '{video_id}' not found.",
+            )
+
+        now = datetime.now(timezone.utc)
+        if video.status != "PENDING_UPLOAD":
+            # Repeated completion calls must never move an active/terminal
+            # pipeline backwards. UPLOADED can safely reassert a missing
+            # planner outbox record; later states already consumed that work.
+            if video.status == "UPLOADED":
+                await enqueue_planner_job(db, video.id)
+                await db.commit()
+            else:
+                await db.rollback()
+            return CompleteUploadResponse(
+                video_id=video.id,
+                status=video.status,
+                uploaded_at=video.uploaded_at or now,
             )
 
         # Perform S3 HeadObject verification - NEVER trust the frontend blindly
@@ -158,13 +193,27 @@ class VideoService:
                 detail="S3 verification failed: Video file object was not found in S3 bucket. Upload may have failed or been aborted.",
             )
 
-        now = datetime.now(timezone.utc)
+        uploaded_content_type = str(s3_meta.get("content_type") or video.content_type)
+        normalized_uploaded_type = uploaded_content_type.partition(";")[0].strip().lower()
+        allowed_content_types = {
+            content_type.lower() for content_type in settings.ALLOWED_CONTENT_TYPES
+        }
+        if (
+            _is_avi(video.original_filename, normalized_uploaded_type)
+            or normalized_uploaded_type not in allowed_content_types
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Uploaded object has unsupported video content type '{uploaded_content_type}'.",
+            )
+
         updated_video = await video_repository.update_status(
             db=db,
             video=video,
             status="UPLOADED",
             uploaded_at=now,
             processing_started_at=now,
+            commit=False,
         )
 
         # Audit event
@@ -174,31 +223,20 @@ class VideoService:
             event_type="UPLOAD_COMPLETED",
             message=f"Direct S3 upload verified successfully. Size: {s3_meta.get('content_length')} bytes.",
             event_metadata=s3_meta,
+            commit=False,
         )
-
-        # Publish planning job to Kafka topic `planner.jobs`
-        try:
-            producer = get_planner_producer()
-            if producer:
-                await asyncio.to_thread(
-                    publish_planning_job,
-                    producer=producer,
-                    video_id=str(updated_video.id),
-                )
-                await asyncio.to_thread(producer.flush)
-                await video_repository.log_event(
-                    db=db,
-                    video_id=updated_video.id,
-                    event_type="PLANNING_JOB_SUBMITTED",
-                    message=f"Published planning job to Kafka topic '{settings.KAFKA_PLANNER_TOPIC}'.",
-                )
-                logger.info(
-                    f"Published planning job for video_id={updated_video.id} to Kafka topic '{settings.KAFKA_PLANNER_TOPIC}'"
-                )
-        except Exception as e:
-            logger.warning(
-                f"Could not publish planning job for video {updated_video.id} to Kafka: {e}"
-            )
+        await enqueue_planner_job(db, updated_video.id)
+        await video_repository.log_event(
+            db=db,
+            video_id=updated_video.id,
+            event_type="PLANNING_JOB_QUEUED",
+            message=(
+                f"Queued planning job transactionally for Kafka topic "
+                f"'{settings.KAFKA_PLANNER_TOPIC}'."
+            ),
+            commit=False,
+        )
+        await db.commit()
 
         # This starts an independent async task on the FastAPI event loop and
         # returns immediately. It is auxiliary: all thumbnail errors are logged
@@ -226,9 +264,10 @@ class VideoService:
         db: AsyncSession,
         limit: int = 100,
         offset: int = 0,
+        search: Optional[str] = None,
     ) -> List[VideoResponse]:
         """Lists uploaded video assets with playback URLs and rendition metadata."""
-        videos = await video_repository.list_videos(db, limit=limit, offset=offset)
+        videos = await video_repository.list_videos(db, limit=limit, offset=offset, search=search)
         result = []
         for v in videos:
             is_ready = (v.status or "").upper() == "READY"
@@ -251,6 +290,7 @@ class VideoService:
                 master_playlist_url=master_url,
                 thumbnail_url=build_thumbnail_url(v.id, v.thumbnail_version),
                 thumbnail_version=v.thumbnail_version,
+                error_message=v.error_message,
                 renditions=renditions_list,
             )
             result.append(res)
@@ -291,6 +331,7 @@ class VideoService:
             master_playlist_url=master_url,
             thumbnail_url=build_thumbnail_url(video.id, video.thumbnail_version),
             thumbnail_version=video.thumbnail_version,
+            error_message=video.error_message,
             created_at=video.created_at,
             uploaded_at=video.uploaded_at,
             source_width=video.source_width,
@@ -332,7 +373,7 @@ class VideoService:
         )
 
     async def delete_video(self, db: AsyncSession, video_id: uuid.UUID) -> None:
-        """Deletes original S3 object and cascades DB records cleanly."""
+        """Delete all S3 assets and all durable records belonging to a video."""
         video = await video_repository.get_by_id(db, video_id)
         if not video:
             raise HTTPException(
@@ -340,13 +381,33 @@ class VideoService:
                 detail=f"Video asset with ID '{video_id}' not found.",
             )
 
-        # Delete S3 Object
-        s3_deleted = s3_service.delete_object(video.s3_key)
-        if not s3_deleted:
-            # Log warning but continue DB cascade cleanup so records don't get stuck
-            print(f"Warning: S3 deletion returned false for key {video.s3_key}")
+        # Release the read transaction before the potentially slow S3 operation.
+        # All source, thumbnail, chunk, rendition and playlist objects use this
+        # deterministic prefix.
+        await db.rollback()
+        video_prefix = f"videos/{video_id}"
+        try:
+            await asyncio.to_thread(s3_service.delete_prefix, video_prefix)
+        except Exception as exc:
+            logger.exception(
+                "Refusing to delete database records after S3 cleanup failed for video %s",
+                video_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Could not remove all stored video files. The video record was preserved so deletion can be retried.",
+            ) from exc
 
-        # Delete DB records (cascades renditions, chunks, events)
+        # Re-read after S3 I/O. A duplicate delete is successful once another
+        # request has already removed the durable record.
+        video = await video_repository.get_by_id(db, video_id)
+        if not video:
+            await db.rollback()
+            return
+
+        # Outbox records have no FK to videos. Remove them explicitly before the
+        # video delete cascades through renditions, chunks and video events.
+        await outbox_repository.delete_for_video(db, video_id)
         await video_repository.delete_video(db, video)
 
     async def cancel_video_processing(
@@ -447,6 +508,8 @@ class VideoService:
 
         if planner_required:
             resumed = await video_repository.resume_cancelled_for_planning(db, video_id)
+            if resumed:
+                await enqueue_planner_job(db, video_id)
             await db.commit()
         else:
             unfinished_ids = [
@@ -481,6 +544,13 @@ class VideoService:
             await rendition_repository.resume_cancelled(db, video_id)
             resumed = await video_repository.resume_cancelled(db, video_id)
             video_finalize_required = not unfinished_ids
+            if resumed:
+                for chunk_id in chunk_ids:
+                    await enqueue_transcode_job(db, chunk_id)
+                for rendition_id in rendition_finalize_ids:
+                    await enqueue_rendition_finalizer_job(db, rendition_id)
+                if video_finalize_required:
+                    await enqueue_video_finalizer_job(db, video_id)
             await db.commit()
 
         resume_stage = (
@@ -501,59 +571,6 @@ class VideoService:
                 "resumed": False,
                 "chunk_ids": [],
             }
-
-        try:
-            if planner_required:
-                planner_producer = get_planner_producer()
-                if planner_producer is None:
-                    raise RuntimeError("Kafka planner producer is unavailable")
-                await asyncio.to_thread(
-                    publish_planning_job,
-                    producer=planner_producer,
-                    video_id=str(video_id),
-                )
-                await asyncio.to_thread(planner_producer.flush)
-
-            elif chunk_ids:
-                producer = get_worker_producer()
-                if producer is None:
-                    raise RuntimeError("Kafka worker producer is unavailable")
-                for chunk_id in chunk_ids:
-                    await asyncio.to_thread(
-                        publish_chunk,
-                        producer=producer,
-                        chunk_id=str(chunk_id),
-                    )
-                await asyncio.to_thread(producer.flush)
-
-            if not planner_required:
-                for rendition_id in rendition_finalize_ids:
-                    await asyncio.to_thread(
-                        publish_finalize_jobs_for_each_rendition,
-                        str(rendition_id),
-                    )
-
-            if video_finalize_required:
-                video_producer = get_video_finalizer_producer()
-                if video_producer is None:
-                    raise RuntimeError("Kafka video finalizer producer is unavailable")
-                await asyncio.to_thread(
-                    publish_video_finalizer_job,
-                    video_producer,
-                    str(video_id),
-                )
-                await asyncio.to_thread(video_producer.flush)
-        except Exception as exc:
-            # DB/Kafka atomicity is intentionally deferred until the outbox work.
-            logger.exception(
-                "Video %s resumed durably but Kafka publication failed: %s",
-                video_id,
-                exc,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Video was resumed, but its processing jobs could not be published.",
-            ) from exc
 
         await publish_event_async(
             video_id,

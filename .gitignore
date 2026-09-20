@@ -17,3 +17,6 @@ backend/.env
 frontend/.next/
 frontend/.source/
 frontend/node_modules/
+
+# Local managed-process PID files
+.run/

@@ -1,28 +1,40 @@
 import uuid
 import logging
 import asyncio
+import os
 import shutil
 import socket
 import time
 from pathlib import Path
 from app.database import AsyncSessionLocal
-from sqlalchemy import select
+from sqlalchemy import func, select
 from app.models import Chunk, Rendition, Video
 from app.services.s3 import s3_service
 from app.services.redis_publisher import publish_event_async
 from app.config import settings
 from datetime import datetime, timezone
-from finalizer.rendition_finalizer import check_rendition_ready
-from worker.producer import publish_finalize_jobs_for_each_rendition
 from app.repositories.chunk_repository import chunk_repository
 from app.repositories.video_repository import video_repository
-from app.services.cancellation_service import settle_video_cancellation
+from app.services.outbox_service import enqueue_rendition_finalizer_job
+from app.services.failure_service import propagate_video_failure
+from app.services.pipeline_settlement import settle_stopped_video
 from app.services.pipeline_cancellation import is_video_cancellation_requested
+from app.core.failure_handling import (
+    JobCancelledError,
+    PermanentJobError,
+    RetryableJobError,
+)
+# FFmpeg failures are permanent and some are retryable -> hence we require careful handling for that
 
 logger = logging.getLogger("transcoder")
 
 
-class TranscodeCancelled(Exception):
+def chunk_attempt_output_dir(chunk_id: str, worker_id: str) -> Path:
+    safe_worker_id = worker_id.replace("/", "_").replace(":", "_")
+    return Path(f"/tmp/video-transcoder/{chunk_id}/{safe_worker_id}")
+
+
+class TranscodeCancelled(JobCancelledError):
     """
     Raised when an FFmpeg process is intentionally stopped because
     the user cancelled video processing.
@@ -30,6 +42,24 @@ class TranscodeCancelled(Exception):
     This is kept separate from normal FFmpeg failures so the chunk
     becomes CANCELLED instead of FAILED.
     """
+
+    pass
+
+
+class LeaseLostError(RetryableJobError):
+    """This worker no longer owns the durable chunk processing lease."""
+
+    pass
+
+
+class WorkerShutdownError(Exception):
+    """The process is stopping; leave Kafka and the chunk lease recoverable."""
+
+    pass
+
+
+class ChunkLeaseBusyError(RetryableJobError):
+    """A different worker still holds this chunk's active lease."""
 
     pass
 
@@ -49,7 +79,7 @@ async def terminate_ffmpeg_process(
     if process.returncode is not None:
         return
 
-    logger.info(f"Stopping FFmpeg for cancelled chunk={chunk_id}")
+    logger.info(f"Stopping FFmpeg for chunk={chunk_id}")
 
     # Ask FFmpeg to terminate gracefully.
     process.terminate()
@@ -77,9 +107,10 @@ async def fetch_chunk_rendition_video_data(chunk_id: str):
     """
     try:
         chunk_uuid = uuid.UUID(chunk_id) if isinstance(chunk_id, str) else chunk_id
-    except ValueError:
-        logger.error(f"Invalid chunk UUID string: '{chunk_id}'")
-        return None
+    except (ValueError, TypeError) as exc:
+        raise PermanentJobError(
+            f"Invalid chunk UUID: {chunk_id}"
+        ) from exc # Having a wrong chunk_id, and retrying it again and again wont make it valid
 
     async with AsyncSessionLocal() as db:
         stmt = (
@@ -109,21 +140,34 @@ async def upload_hls_chunks(
     s3_prefix: str,
     video_id: str,
     cancel_event: asyncio.Event,
+    lease_lost_event: asyncio.Event,
 ) -> int:
     """
     Uploads the HLS chunks (.m3u8 playlist and .ts segments) from local_directory to S3 at s3_prefix.
     """
     if not local_directory.exists() or not local_directory.is_dir():
-        logger.error(f"Local directory '{local_directory}' does not exist.")
-        return 0
+        raise RetryableJobError(
+            f"Transcode output directory '{local_directory}' does not exist"
+        )
+
+    playlist = local_directory / "index.m3u8"
+    segments = sorted(local_directory.glob("*.ts"))
+    if not playlist.is_file() or not segments:
+        raise RetryableJobError(
+            f"Incomplete local HLS output for chunk: playlist={playlist.is_file()} "
+            f"segments={len(segments)}"
+        )
 
     uploaded_count = 0
     prefix = s3_prefix.rstrip("/") + "/"
-    for file_path in local_directory.iterdir():
-        if not file_path.is_file():
-            continue
+    # Publish the playlist last. A failed partial upload therefore cannot expose
+    # a new manifest that references segments which have not reached S3 yet.
+    upload_order = segments + [playlist]
+    for file_path in upload_order:
         if await is_video_cancellation_requested(video_id, cancel_event):
             raise TranscodeCancelled()
+        if lease_lost_event.is_set():
+            raise LeaseLostError("Chunk lease was lost before HLS upload completed")
         s3_key = f"{prefix}{file_path.name}"
 
         success = await asyncio.to_thread(
@@ -132,11 +176,44 @@ async def upload_hls_chunks(
             s3_key=s3_key,
         )
         if not success:
-            raise RuntimeError(f"Failed to upload {file_path.name} to S3")
+            raise RetryableJobError(f"Failed to upload {file_path.name} to S3")
+
         uploaded_count += 1
 
     return uploaded_count
 
+def build_ffmpeg_failure(
+    stderr: str,
+    returncode: int,
+) -> Exception:
+    """
+    Convert an FFmpeg failure into a pipeline failure type.
+
+    Permanent:
+        The source/input itself is invalid or unsupported.
+
+    Retryable:
+        Everything else for now, since infrastructure/resource/network
+        failures may succeed on another attempt.
+    """
+
+    error = stderr.lower()
+
+    permanent_patterns = (
+        "invalid data found when processing input",
+        "moov atom not found",
+        "could not find codec parameters",
+        "unsupported codec",
+    )
+
+    if any(pattern in error for pattern in permanent_patterns):
+        return PermanentJobError(
+            f"FFmpeg rejected the source media: {stderr[-1000:]}"
+        )
+
+    return RetryableJobError(
+        f"FFmpeg exited with code {returncode}: {stderr[-1000:]}"
+    )
 
 async def transcode_chunk(
     input_url: str,
@@ -150,10 +227,12 @@ async def transcode_chunk(
     worker_id: str,
     source_frame_rate: float,
     cancel_event: asyncio.Event,
+    lease_lost_event: asyncio.Event,
+    shutdown_event: asyncio.Event | None = None,
 ):
     duration = end_seconds - start_seconds
     duration_us = max(1.0, duration * 1_000_000)
-    output_dir = Path(f"/tmp/video-transcoder/{chunk_id}")
+    output_dir = chunk_attempt_output_dir(chunk_id, worker_id)
     output_dir.mkdir(parents=True, exist_ok=True)
     playlist = output_dir / "index.m3u8"
     segment_pattern = output_dir / "segment_%03d.ts"
@@ -217,37 +296,106 @@ async def transcode_chunk(
 
     stderr_task = asyncio.create_task(read_stderr())
 
+    async def monitor_durable_stop_state() -> None:
+        """Poll PostgreSQL without retaining a session while FFmpeg runs."""
+        while process.returncode is None and not cancel_event.is_set():
+            await asyncio.sleep(5.0)
+            try:
+                if await is_video_cancellation_requested(video_id):
+                    logger.info(
+                        "Durable stop state detected for video=%s chunk=%s",
+                        video_id,
+                        chunk_id,
+                    )
+                    cancel_event.set()
+                    return
+            except Exception:
+                logger.warning(
+                    "Could not check durable stop state for video=%s chunk=%s",
+                    video_id,
+                    chunk_id,
+                    exc_info=True,
+                )
+
+    durable_stop_task = asyncio.create_task(monitor_durable_stop_state())
+
+    async def stop_durable_stop_monitor() -> None:
+        if not durable_stop_task.done():
+            durable_stop_task.cancel()
+        try:
+            await durable_stop_task
+        except asyncio.CancelledError:
+            pass
+
     while True:
         # Wait for either:
         # 1. FFmpeg to produce another progress line
         # 2. This chunk/video to receive a cancellation signal
         progress_task = asyncio.create_task(process.stdout.readline())
         cancel_task = asyncio.create_task(cancel_event.wait())
+        lease_task = asyncio.create_task(lease_lost_event.wait())
+        shutdown_task = (
+            asyncio.create_task(shutdown_event.wait())
+            if shutdown_event is not None
+            else None
+        )
 
-        done, pending = await asyncio.wait(
-            {progress_task, cancel_task},
+        waiters = {progress_task, cancel_task, lease_task}
+        if shutdown_task is not None:
+            waiters.add(shutdown_task)
+        done, _ = await asyncio.wait(
+            waiters,
             return_when=asyncio.FIRST_COMPLETED,
         )
 
-        # Cancellation won the race.
+        # Durable user cancellation wins if it races process shutdown.
         if cancel_task in done and cancel_event.is_set():
-            # We no longer need to wait for the pending stdout read.
             if not progress_task.done():
                 progress_task.cancel()
-
+            if not lease_task.done():
+                lease_task.cancel()
+            if shutdown_task is not None and not shutdown_task.done():
+                shutdown_task.cancel()
+            await stop_durable_stop_monitor()
             await terminate_ffmpeg_process(
                 process=process,
                 chunk_id=chunk_id,
             )
-
-            # Wait for stderr reader to finish now that FFmpeg is dead.
             await stderr_task
-
             raise TranscodeCancelled(f"Transcoding cancelled for chunk {chunk_id}")
+
+        if shutdown_task is not None and shutdown_task in done:
+            if not progress_task.done():
+                progress_task.cancel()
+            if not cancel_task.done():
+                cancel_task.cancel()
+            if not lease_task.done():
+                lease_task.cancel()
+            await stop_durable_stop_monitor()
+            await terminate_ffmpeg_process(process=process, chunk_id=chunk_id)
+            await stderr_task
+            raise WorkerShutdownError(
+                f"Worker shutdown interrupted chunk {chunk_id}"
+            )
+
+        if lease_task in done and lease_lost_event.is_set():
+            if not progress_task.done():
+                progress_task.cancel()
+            if not cancel_task.done():
+                cancel_task.cancel()
+            if shutdown_task is not None and not shutdown_task.done():
+                shutdown_task.cancel()
+            await stop_durable_stop_monitor()
+            await terminate_ffmpeg_process(process=process, chunk_id=chunk_id)
+            await stderr_task
+            raise LeaseLostError(f"Transcode lease lost for chunk {chunk_id}")
 
         # FFmpeg produced output first.
         # Stop the unused cancellation waiter for this iteration.
         cancel_task.cancel()
+        lease_task.cancel()
+        if shutdown_task is not None:
+            shutdown_task.cancel()
 
         line_bytes = await progress_task
 
@@ -288,13 +436,17 @@ async def transcode_chunk(
             finally:
                 ffmpeg_values = {}
 
+    await stop_durable_stop_monitor()
     await process.wait()
     await stderr_task
 
     if process.returncode != 0:
         error = b"".join(stderr_chunks).decode(errors="replace")
         logger.error(f"FFmpeg failed for chunk {chunk_id}:\n{error}")
-        raise RuntimeError(f"FFmpeg exited with code {process.returncode}")
+        raise build_ffmpeg_failure(
+            stderr=error,
+            returncode=process.returncode,
+        )
 
     logger.info(f"FFmpeg completed chunk={chunk_id}: {playlist}")
 
@@ -379,25 +531,40 @@ async def update_chunk_status(
             chunk.progress_percent = 0.0
             chunk.worker_id = worker_id
         elif status == "DONE":
-            if chunk.status != "PROCESSING":
+            owns_lease = worker_id is not None and (
+                await chunk_repository.owns_active_lease(
+                    db,
+                    chunk_uuid,
+                    worker_id,
+                )
+            )
+            if not owns_lease:
                 await db.rollback()
                 return False
             chunk.status = "DONE"
             chunk.progress_percent = 100.0
             chunk.completed_at = now
+            chunk.error_message = None
+            chunk.lease_expires_at = None
             if chunk.processing_started_at:
                 chunk.processing_time_seconds = (
                     now - chunk.processing_started_at
                 ).total_seconds()
+            await db.flush()
+            if await chunk_repository.are_all_chunks_completed(
+                db, chunk.rendition_id
+            ):
+                await enqueue_rendition_finalizer_job(db, chunk.rendition_id)
         elif status == "FAILED":
-            if chunk.status != "PROCESSING":
+            if chunk.status != "PROCESSING" or chunk.worker_id != worker_id:
                 await db.rollback()
                 return False
             chunk.status = "FAILED"
             chunk.completed_at = now
             chunk.error_message = error_msg
+            chunk.lease_expires_at = None
         elif status == "CANCELLED":
-            if chunk.status != "PROCESSING":
+            if chunk.status != "PROCESSING" or chunk.worker_id != worker_id:
                 await db.rollback()
                 return False
             chunk.status = "CANCELLED"
@@ -405,6 +572,7 @@ async def update_chunk_status(
             chunk.ffmpeg_progress = None
             chunk.completed_at = now
             chunk.worker_id = None
+            chunk.lease_expires_at = None
             if chunk.processing_started_at:
                 chunk.processing_time_seconds = (
                     now - chunk.processing_started_at
@@ -441,10 +609,21 @@ async def record_chunk_progress(
     """Persist and publish a worker's latest chunk progress on the video channel."""
     bounded_progress = round(min(99.0, max(0.0, progress)), 1)
     async with AsyncSessionLocal() as db:
-        chunk = await db.get(Chunk, uuid.UUID(chunk_id))
+        chunk = (
+            await db.execute(
+                select(Chunk)
+                .where(
+                    Chunk.id == uuid.UUID(chunk_id),
+                    Chunk.status == "PROCESSING",
+                    Chunk.worker_id == worker_id,
+                    Chunk.lease_expires_at.is_not(None),
+                    Chunk.lease_expires_at > func.now(),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
         if chunk is None:
-            raise ValueError(f"Chunk not found: {chunk_id}")
-        if chunk.status != "PROCESSING":
+            await db.rollback()
             return
         # Progress must never move backwards when FFmpeg emits a delayed line.
         chunk.progress_percent = max(chunk.progress_percent or 0.0, bounded_progress)
@@ -478,6 +657,81 @@ def cleanup_chunk_directory(output_dir: Path):
         logger.warning(f"Failed to clean temporary directory {output_dir}: {e}")
 
 
+async def owns_active_chunk_lease(chunk_id: str, worker_id: str) -> bool:
+    async with AsyncSessionLocal() as db:
+        return await chunk_repository.owns_active_lease(
+            db,
+            uuid.UUID(chunk_id),
+            worker_id,
+        )
+
+
+async def maintain_chunk_lease(
+    *,
+    chunk_id: str,
+    worker_id: str,
+    stop_event: asyncio.Event,
+    lease_lost_event: asyncio.Event,
+) -> None:
+    """Extend this attempt's lease until stopped or ownership is lost."""
+    last_confirmed_at = asyncio.get_running_loop().time()
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(),
+                timeout=settings.TRANSCODE_LEASE_HEARTBEAT_SECONDS,
+            )
+            return
+        except asyncio.TimeoutError:
+            pass
+
+        try:
+            async with AsyncSessionLocal() as db:
+                extended = await chunk_repository.extend_lease(
+                    db,
+                    uuid.UUID(chunk_id),
+                    worker_id,
+                    settings.TRANSCODE_LEASE_DURATION_SECONDS,
+                )
+        except Exception:
+            logger.warning(
+                "Could not heartbeat chunk lease chunk=%s worker=%s",
+                chunk_id,
+                worker_id,
+                exc_info=True,
+            )
+            if (
+                asyncio.get_running_loop().time() - last_confirmed_at
+                >= settings.TRANSCODE_LEASE_DURATION_SECONDS
+            ):
+                lease_lost_event.set()
+                return
+            continue
+
+        if not extended:
+            logger.warning(
+                "Chunk lease ownership lost chunk=%s worker=%s",
+                chunk_id,
+                worker_id,
+            )
+            lease_lost_event.set()
+            return
+        last_confirmed_at = asyncio.get_running_loop().time()
+
+
+async def stop_chunk_heartbeat(
+    task: asyncio.Task | None,
+    stop_event: asyncio.Event,
+) -> None:
+    if task is None:
+        return
+    stop_event.set()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 async def cancellation_requested(
     video_id: str,
     cancel_event: asyncio.Event | None = None,
@@ -497,10 +751,11 @@ async def cancel_and_settle_chunk(
 ) -> None:
     """Cancel this chunk, run shared settlement, then publish its event."""
     async with AsyncSessionLocal() as db:
-        settlement = await settle_video_cancellation(
+        settlement = await settle_stopped_video(
             db,
             uuid.UUID(video_id),
-            cancelled_chunk_id=uuid.UUID(chunk_id),
+            stopped_chunk_id=uuid.UUID(chunk_id),
+            worker_id=worker_id,
         )
 
     if settlement.chunk_transitioned:
@@ -515,49 +770,185 @@ async def cancel_and_settle_chunk(
         )
 
 
-async def main_worker(chunk_id: str, cancel_event: asyncio.Event, active_job: dict):
+async def release_chunk_for_retry(
+    chunk_id: str,
+    error_message: str,
+    worker_id: str | None,
+    next_attempt: int,
+) -> bool:
+    """Make a retryable chunk claimable by the republished Kafka job."""
+    try:
+        chunk_uuid = uuid.UUID(chunk_id)
+    except (TypeError, ValueError):
+        return False
+    async with AsyncSessionLocal() as db:
+        released = await chunk_repository.release_for_retry(
+            db,
+            chunk_uuid,
+            error_message,
+            worker_id,
+        )
+    if not released:
+        return False
+
+    # PostgreSQL remains PENDING. RETRYING is intentionally only a transient
+    # SSE/UI state while backoff and Kafka republication are in progress.
+    result = await fetch_chunk_rendition_video_data(chunk_id)
+    if result and not await cancellation_requested(str(result["video_id"])):
+        await publish_event_async(
+            str(result["video_id"]),
+            {
+                "type": "chunk.retrying",
+                "video_id": str(result["video_id"]),
+                "rendition_id": str(result["rendition_id"]),
+                "chunk_id": chunk_id,
+                "chunk_index": int(result["chunk_index"]),
+                "resolution": str(result["resolution"]),
+                "status": "RETRYING",
+                "progress": 0.0,
+                "worker_id": None,
+                "attempt": next_attempt,
+                "message": "Scheduled for retry",
+            },
+        )
+    return True
+
+
+async def settle_retry_failure_if_cancelled(
+    chunk_id: str,
+    worker_id: str | None,
+) -> bool:
+    """Close a cancellation race instead of reopening the chunk for retry."""
+    try:
+        result = await fetch_chunk_rendition_video_data(chunk_id)
+    except PermanentJobError:
+        return False
+    if not result:
+        return False
+    video_id = str(result["video_id"])
+    if not await cancellation_requested(video_id):
+        return False
+
+    cleanup_chunk_directory(chunk_attempt_output_dir(chunk_id, worker_id or "unknown"))
+    await cancel_and_settle_chunk(
+        chunk_id=chunk_id,
+        video_id=video_id,
+        rendition_id=str(result["rendition_id"]),
+        resolution=str(result["resolution"]),
+        chunk_index=int(result["chunk_index"]),
+        worker_id=worker_id or "",
+    )
+    return True
+
+
+async def mark_chunk_failed_terminal(
+    chunk_id: str,
+    error_message: str,
+    worker_id: str | None,
+) -> bool:
+    """Atomically begin and, when possible, settle pipeline failure."""
+    try:
+        result = await fetch_chunk_rendition_video_data(chunk_id)
+    except PermanentJobError:
+        return False
+    if not result:
+        return False
+
+    video_id = str(result["video_id"])
+    if worker_id is None:
+        return False
+    initiation, _ = await propagate_video_failure(
+        video_id=video_id,
+        failed_chunk_id=chunk_id,
+        error_message=error_message,
+        worker_id=worker_id,
+    )
+
+    if initiation.chunk_transitioned:
+        await publish_chunk_status_event(
+            chunk_id=chunk_id,
+            status="FAILED",
+            video_id=video_id,
+            rendition_id=str(result["rendition_id"]),
+            resolution=str(result["resolution"]),
+            chunk_index=int(result["chunk_index"]),
+            worker_id=worker_id,
+            error_msg=error_message,
+        )
+
+    return initiation.status in {"FAILING", "FAILED"}
+
+
+async def main_worker(
+    chunk_id: str,
+    cancel_event: asyncio.Event,
+    active_job: dict,
+    shutdown_event: asyncio.Event | None = None,
+):
     """
     This is the main worker function that will be called by the worker process.
     It will fetch chunk data, generate presigned URL, transcode with FFmpeg, and upload to S3.
     """
+    worker_id = (
+        f"{socket.gethostname()[:60]}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+    )[:100]
+    active_job["worker_id"] = worker_id
     result = await fetch_chunk_rendition_video_data(chunk_id)
     if not result:
-        logger.warning(f"No database records found for chunk_id: {chunk_id}")
-        return
+        raise PermanentJobError(
+            f"Chunk/Rendition/Video data not found for chunk_id={chunk_id}"
+        )
 
     video_id = str(result["video_id"])
     active_job["video_id"] = video_id
     rendition_id = str(result["rendition_id"])
     resolution = str(result["resolution"])
     chunk_index = int(result["chunk_index"])
-    worker_id = socket.gethostname()
     source_frame_rate = float(result["source_frame_rate"] or 30.0)
-
-    # Generate the S3 pre-signed url
-    presigned_url = s3_service.generate_presigned_get_url(
-        s3_key=result["s3_key"],
-        expires_in=settings.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
-        response_filename=result["original_filename"],
-    )
+    heartbeat_stop_event = asyncio.Event()
+    lease_lost_event = asyncio.Event()
+    heartbeat_task: asyncio.Task | None = None
 
     try:
+        if shutdown_event is not None and shutdown_event.is_set():
+            raise WorkerShutdownError("Worker shutdown requested before chunk claim")
         async with AsyncSessionLocal() as db:
             claimed = await chunk_repository.claim_for_processing(
                 db=db,
                 chunk_id=uuid.UUID(chunk_id),
                 worker_id=worker_id,
+                lease_duration_seconds=settings.TRANSCODE_LEASE_DURATION_SECONDS,
             )
 
         if not claimed:
-            logger.info(f"Skipping chunk={chunk_id}. Chunk is no longer PENDING.")
+            logger.info(f"Chunk={chunk_id} was not claimable by worker={worker_id}.")
             # Cancellation may have changed this queued chunk to CANCELLED
             # before the worker received it. Re-run the shared, idempotent
             # settlement so the last ineligible Kafka job can complete
             # CANCELLING -> CANCELLED once no active chunks remain.
             if await cancellation_requested(video_id):
                 async with AsyncSessionLocal() as db:
-                    await settle_video_cancellation(db, uuid.UUID(video_id))
+                    await settle_stopped_video(db, uuid.UUID(video_id))
+                return
+            async with AsyncSessionLocal() as db:
+                still_processing = await chunk_repository.is_processing(
+                    db,
+                    uuid.UUID(chunk_id),
+                )
+            if still_processing:
+                raise ChunkLeaseBusyError(
+                    f"Chunk {chunk_id} is owned by another active lease"
+                )
             return
+
+        heartbeat_task = asyncio.create_task(
+            maintain_chunk_lease(
+                chunk_id=chunk_id,
+                worker_id=worker_id,
+                stop_event=heartbeat_stop_event,
+                lease_lost_event=lease_lost_event,
+            )
+        )
 
         # claim_for_processing already performed the only DB transition. This
         # restores the event previously emitted by update_chunk_status().
@@ -569,6 +960,12 @@ async def main_worker(chunk_id: str, cancel_event: asyncio.Event, active_job: di
             resolution=resolution,
             chunk_index=chunk_index,
             worker_id=worker_id,
+        )
+        # Failures from this point belong to a durably claimed attempt.
+        presigned_url = s3_service.generate_presigned_get_url(
+            s3_key=result["s3_key"],
+            expires_in=settings.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
+            response_filename=result["original_filename"],
         )
 
         output_dir = await transcode_chunk(
@@ -583,9 +980,17 @@ async def main_worker(chunk_id: str, cancel_event: asyncio.Event, active_job: di
             worker_id=worker_id,
             source_frame_rate=source_frame_rate,
             cancel_event=cancel_event,
+            lease_lost_event=lease_lost_event,
+            shutdown_event=shutdown_event,
         )
 
         logger.info(f"Transcoded chunk to local directory: {output_dir}")
+
+        if lease_lost_event.is_set() or not await owns_active_chunk_lease(
+            chunk_id,
+            worker_id,
+        ):
+            raise LeaseLostError(f"Chunk lease lost before upload: {chunk_id}")
 
         # Redis can be missed. Re-read PostgreSQL immediately before uploading
         # so a completed FFmpeg process cannot bypass durable cancellation.
@@ -610,6 +1015,7 @@ async def main_worker(chunk_id: str, cancel_event: asyncio.Event, active_job: di
             s3_prefix=result["temporary_s3_prefix"],
             video_id=video_id,
             cancel_event=cancel_event,
+            lease_lost_event=lease_lost_event,
         )
 
         marked_done = await update_chunk_status(
@@ -632,12 +1038,15 @@ async def main_worker(chunk_id: str, cancel_event: asyncio.Event, active_job: di
                     chunk_index=chunk_index,
                     worker_id=worker_id,
                 )
-            return
+                return
+            raise LeaseLostError(
+                f"Worker {worker_id} no longer owns chunk {chunk_id} at DONE"
+            )
     except TranscodeCancelled:
         logger.info(f"Chunk {chunk_id} was cancelled while transcoding")
 
         # Remove partial HLS files generated before FFmpeg was stopped.
-        cleanup_chunk_directory(Path(f"/tmp/video-transcoder/{chunk_id}"))
+        cleanup_chunk_directory(chunk_attempt_output_dir(chunk_id, worker_id))
         await cancel_and_settle_chunk(
             chunk_id=chunk_id,
             video_id=video_id,
@@ -648,19 +1057,9 @@ async def main_worker(chunk_id: str, cancel_event: asyncio.Event, active_job: di
         )
         return
 
-    except Exception as e:
-        marked_failed = await update_chunk_status(
-            chunk_id=chunk_id,
-            status="FAILED",
-            video_id=video_id,
-            rendition_id=rendition_id,
-            resolution=resolution,
-            chunk_index=chunk_index,
-            worker_id=worker_id,
-            error_msg=str(e),
-        )
-        if not marked_failed and await cancellation_requested(video_id):
-            cleanup_chunk_directory(Path(f"/tmp/video-transcoder/{chunk_id}"))
+    except Exception:
+        cleanup_chunk_directory(chunk_attempt_output_dir(chunk_id, worker_id))
+        if await cancellation_requested(video_id):
             await cancel_and_settle_chunk(
                 chunk_id=chunk_id,
                 video_id=video_id,
@@ -672,18 +1071,8 @@ async def main_worker(chunk_id: str, cancel_event: asyncio.Event, active_job: di
             return
         raise
 
-    # Check if all the chunks have been covered or not for this Rendition before going with playlist assembly
-    all_chunks_covered_for_this_rendition = await check_rendition_ready(
-        rendition_id=result["rendition_id"]
-    )
-
-    if all_chunks_covered_for_this_rendition and not await cancellation_requested(
-        video_id, cancel_event
-    ):
-        await asyncio.to_thread(
-            publish_finalize_jobs_for_each_rendition,
-            rendition_id,
-        )
+    finally:
+        await stop_chunk_heartbeat(heartbeat_task, heartbeat_stop_event)
 
     cleanup_chunk_directory(output_dir)
 

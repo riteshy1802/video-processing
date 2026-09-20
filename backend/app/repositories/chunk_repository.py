@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
-from sqlalchemy import select, update, func
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.models.chunk import Chunk
@@ -54,6 +54,7 @@ class ChunkRepository:
             chunk.attempt_count += 1
         elif status in ("DONE", "COMPLETED"):
             chunk.completed_at = now
+            chunk.lease_expires_at = None
             if processing_time_seconds is not None:
                 chunk.processing_time_seconds = processing_time_seconds
             elif chunk.processing_started_at:
@@ -61,6 +62,7 @@ class ChunkRepository:
                     now - chunk.processing_started_at
                 ).total_seconds()
         elif status == "FAILED":
+            chunk.lease_expires_at = None
             if error_message:
                 chunk.error_message = error_message
 
@@ -89,12 +91,25 @@ class ChunkRepository:
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def is_processing(
+        self,
+        db: AsyncSession,
+        chunk_id: uuid.UUID,
+    ) -> bool:
+        stmt = select(Chunk.id).where(
+            Chunk.id == chunk_id,
+            Chunk.status == "PROCESSING",
+        )
+        return (await db.execute(stmt)).scalar_one_or_none() is not None
+
     async def claim_for_processing(
         self,
         db: AsyncSession,
         chunk_id: uuid.UUID,
         worker_id: str,
+        lease_duration_seconds: int,
     ) -> bool:
+        """Atomically claim PENDING or reclaim expired PROCESSING work."""
         # Serialize claims with cancellation on the parent video. Otherwise a
         # claim and cancel can update different rows from stale snapshots.
         video_status_stmt = (
@@ -112,19 +127,33 @@ class ChunkRepository:
             return False
 
         now = datetime.now(timezone.utc)
+        lease_expires_at = func.now() + timedelta(seconds=lease_duration_seconds)
 
         stmt = (
             update(Chunk)
             .where(
                 Chunk.id == chunk_id,
-                Chunk.status == "PENDING",
+                or_(
+                    Chunk.status == "PENDING",
+                    and_(
+                        Chunk.status == "PROCESSING",
+                        or_(
+                            Chunk.lease_expires_at.is_(None),
+                            Chunk.lease_expires_at <= func.now(),
+                        ),
+                    ),
+                ),
             )
             .values(
                 status="PROCESSING",
                 worker_id=worker_id,
+                lease_expires_at=lease_expires_at,
                 processing_started_at=now,
                 progress_percent=0.0,
+                ffmpeg_progress=None,
                 attempt_count=Chunk.attempt_count + 1,
+                completed_at=None,
+                processing_time_seconds=None,
                 updated_at=now,
             )
         )
@@ -137,6 +166,48 @@ class ChunkRepository:
 
         await db.commit()
         return True
+
+    async def extend_lease(
+        self,
+        db: AsyncSession,
+        chunk_id: uuid.UUID,
+        worker_id: str,
+        lease_duration_seconds: int,
+    ) -> bool:
+        """Extend an unexpired lease only for its current owner."""
+        now = datetime.now(timezone.utc)
+        result = await db.execute(
+            update(Chunk)
+            .where(
+                Chunk.id == chunk_id,
+                Chunk.status == "PROCESSING",
+                Chunk.worker_id == worker_id,
+                Chunk.lease_expires_at.is_not(None),
+                Chunk.lease_expires_at > func.now(),
+            )
+            .values(
+                lease_expires_at=func.now()
+                + timedelta(seconds=lease_duration_seconds),
+                updated_at=now,
+            )
+        )
+        await db.commit()
+        return result.rowcount == 1
+
+    async def owns_active_lease(
+        self,
+        db: AsyncSession,
+        chunk_id: uuid.UUID,
+        worker_id: str,
+    ) -> bool:
+        stmt = select(Chunk.id).where(
+            Chunk.id == chunk_id,
+            Chunk.status == "PROCESSING",
+            Chunk.worker_id == worker_id,
+            Chunk.lease_expires_at.is_not(None),
+            Chunk.lease_expires_at > func.now(),
+        )
+        return (await db.execute(stmt)).scalar_one_or_none() is not None
 
     async def cancel_pending_chunks(
         self,
@@ -165,6 +236,7 @@ class ChunkRepository:
                 status="CANCELLED",
                 progress_percent=0.0,
                 worker_id=None,
+                lease_expires_at=None,
                 ffmpeg_progress=None,
                 updated_at=datetime.now(timezone.utc),
             )
@@ -180,11 +252,16 @@ class ChunkRepository:
         self,
         db: AsyncSession,
         chunk_id: uuid.UUID,
+        worker_id: str | None = None,
     ) -> bool:
         """Conditionally mark only a currently PROCESSING chunk CANCELLED."""
         now = datetime.now(timezone.utc)
         chunk = await db.get(Chunk, chunk_id, with_for_update=True)
-        if chunk is None or chunk.status != "PROCESSING":
+        if (
+            chunk is None
+            or chunk.status != "PROCESSING"
+            or (worker_id is not None and chunk.worker_id != worker_id)
+        ):
             return False
 
         chunk.status = "CANCELLED"
@@ -193,6 +270,42 @@ class ChunkRepository:
         chunk.completed_at = now
         chunk.updated_at = now
         chunk.worker_id = None
+        chunk.lease_expires_at = None
+        if chunk.processing_started_at:
+            chunk.processing_time_seconds = (
+                now - chunk.processing_started_at
+            ).total_seconds()
+        return True
+
+    async def mark_failed(
+        self,
+        db: AsyncSession,
+        chunk_id: uuid.UUID,
+        error_message: str,
+        worker_id: str | None = None,
+    ) -> bool:
+        """Conditionally preserve the current owner's terminal chunk as FAILED."""
+        now = datetime.now(timezone.utc)
+        chunk = (
+            await db.execute(
+                select(Chunk)
+                .where(
+                    Chunk.id == chunk_id,
+                    Chunk.status == "PROCESSING",
+                    Chunk.worker_id == worker_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if chunk is None:
+            return False
+
+        chunk.status = "FAILED"
+        chunk.error_message = error_message
+        chunk.completed_at = now
+        chunk.updated_at = now
+        chunk.worker_id = worker_id
+        chunk.lease_expires_at = None
         if chunk.processing_started_at:
             chunk.processing_time_seconds = (
                 now - chunk.processing_started_at
@@ -269,6 +382,7 @@ class ChunkRepository:
                 status="PENDING",
                 progress_percent=0.0,
                 worker_id=None,
+                lease_expires_at=None,
                 processing_started_at=None,
                 completed_at=None,
                 processing_time_seconds=None,
@@ -295,6 +409,118 @@ class ChunkRepository:
             .order_by(Chunk.rendition_id, Chunk.chunk_index)
         )
         return list((await db.execute(stmt)).scalars().all())
+
+    async def release_for_retry(
+        self,
+        db: AsyncSession,
+        chunk_id: uuid.UUID,
+        error_message: str,
+        worker_id: str | None,
+    ) -> bool:
+        """Persist a retryable error and safely return PROCESSING to PENDING."""
+        video_status_stmt = (
+            select(Video.status)
+            .join(Rendition, Rendition.video_id == Video.id)
+            .join(Chunk, Chunk.rendition_id == Rendition.id)
+            .where(Chunk.id == chunk_id)
+            .with_for_update(of=Video)
+        )
+        video_status = (await db.execute(video_status_stmt)).scalar_one_or_none()
+        if video_status != "PROCESSING":
+            await db.rollback()
+            return False
+
+        now = datetime.now(timezone.utc)
+        stmt = (
+            update(Chunk)
+            .where(
+                Chunk.id == chunk_id,
+                Chunk.status == "PROCESSING",
+                Chunk.worker_id == worker_id,
+            )
+            .values(
+                status="PENDING",
+                progress_percent=0.0,
+                worker_id=None,
+                lease_expires_at=None,
+                processing_started_at=None,
+                completed_at=None,
+                processing_time_seconds=None,
+                error_message=error_message,
+                ffmpeg_progress=None,
+                updated_at=now,
+            )
+        )
+        result = await db.execute(stmt)
+        if result.rowcount == 1:
+            await db.commit()
+            return True
+
+        # A failure can occur while acquiring the claim itself. In that case
+        # PENDING is already the correct retry state and no attempt was made.
+        current_status = await self.get_status_for_worker(db, chunk_id)
+        if current_status == "PENDING":
+            await db.execute(
+                update(Chunk)
+                .where(Chunk.id == chunk_id, Chunk.status == "PENDING")
+                .values(error_message=error_message, updated_at=now)
+            )
+            await db.commit()
+            return True
+
+        await db.rollback()
+        return False
+
+    async def redrive_failed(
+        self,
+        db: AsyncSession,
+        chunk_id: uuid.UUID,
+        commit: bool = True,
+    ) -> bool:
+        """Make a terminally failed chunk claimable without reviving cancellation."""
+        video_status_stmt = (
+            select(Video.status)
+            .join(Rendition, Rendition.video_id == Video.id)
+            .join(Chunk, Chunk.rendition_id == Rendition.id)
+            .where(Chunk.id == chunk_id)
+            .with_for_update(of=Video)
+        )
+        video_status = (await db.execute(video_status_stmt)).scalar_one_or_none()
+        if video_status != "PROCESSING":
+            await db.rollback()
+            return False
+
+        now = datetime.now(timezone.utc)
+        result = await db.execute(
+            update(Chunk)
+            .where(
+                Chunk.id == chunk_id,
+                Chunk.status == "FAILED",
+            )
+            .values(
+                status="PENDING",
+                progress_percent=0.0,
+                worker_id=None,
+                processing_started_at=None,
+                completed_at=None,
+                processing_time_seconds=None,
+                error_message=None,
+                ffmpeg_progress=None,
+                lease_expires_at=None,
+                updated_at=now,
+            )
+        )
+        if result.rowcount == 1:
+            if commit:
+                await db.commit()
+            else:
+                await db.flush()
+            return True
+
+        current_status = await self.get_status_for_worker(db, chunk_id)
+        if current_status != "PENDING":
+            await db.rollback()
+        return current_status == "PENDING"
 
 
 chunk_repository = ChunkRepository()

@@ -78,6 +78,40 @@ async def publish_video_cancelled(video_id: str | uuid.UUID) -> bool:
     )
 
 
+async def publish_video_failed(
+    video_id: str | uuid.UUID,
+    error_message: str,
+) -> bool:
+    """Publish terminal pipeline failure on the video's SSE channel."""
+    return await publish_event_async(
+        video_id,
+        {
+            "type": "video.failed",
+            "video_id": str(video_id),
+            "status": "FAILED",
+            "error": error_message,
+            "message": error_message,
+        },
+    )
+
+
+async def publish_video_failing(
+    video_id: str | uuid.UUID,
+    error_message: str,
+) -> bool:
+    """Publish the durable start of terminal pipeline shutdown."""
+    return await publish_event_async(
+        video_id,
+        {
+            "type": "video.failing",
+            "video_id": str(video_id),
+            "status": "FAILING",
+            "error": error_message,
+            "message": "Stopping remaining work after a terminal processing failure",
+        },
+    )
+
+
 async def publish_video_cancel(video_id: str | uuid.UUID) -> bool:
     """
     Broadcast a video cancellation request to all transcode workers.

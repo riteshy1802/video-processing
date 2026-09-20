@@ -2,6 +2,7 @@
 
 import { use, useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Video } from "@/types/video";
 import { VideoAPI } from "@/lib/api/videos";
 import { VideoStatusBadge } from "@/components/video/video-status-badge";
@@ -42,6 +43,7 @@ export default function VideoDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const router = useRouter();
   const { isCollapsed } = useSidebar();
 
   const [video, setVideo] = useState<Video | null>(null);
@@ -53,12 +55,14 @@ export default function VideoDetailPage({
   const [isDeleting, setIsDeleting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
+  const [thumbnailPreviewUrl, setThumbnailPreviewUrl] = useState<string | null>(null);
   const [selectedQuality, setSelectedQuality] = useState<string>("auto");
   const [countdown, setCountdown] = useState<number | null>(null);
   const [cancelledCountdown, setCancelledCountdown] = useState<number | null>(null);
   const countdownTimerRef = useRef<NodeJS.Timeout | null>(null);
   const cancelRequestInFlightRef = useRef(false);
   const resumeRequestInFlightRef = useRef(false);
+  const thumbnailPreviewUrlRef = useRef<string | null>(null);
 
   const fetchVideo = useCallback(async () => {
     try {
@@ -66,7 +70,15 @@ export default function VideoDetailPage({
       if (!data) {
         setNotFound(true);
       } else {
-        setVideo(data);
+        setVideo((current) => {
+          if (!current || !current.thumbnailUrl || !data.thumbnailUrl) return data;
+          const existingBase = current.thumbnailUrl.split("?")[0];
+          const newBase = data.thumbnailUrl.split("?")[0];
+          if (existingBase === newBase && (current.thumbnailVersion ?? 0) === (data.thumbnailVersion ?? 0)) {
+            return { ...data, thumbnailUrl: current.thumbnailUrl };
+          }
+          return data;
+        });
       }
     } catch {
       toast.error("Failed to load video details");
@@ -85,15 +97,65 @@ export default function VideoDetailPage({
     setCountdown(10);
   }, [countdown]);
 
+  const handleVideoFailed = useCallback((errorMessage?: string) => {
+    setVideo((current) => current ? {
+      ...current,
+      status: "failed",
+      errorMessage: errorMessage || current.errorMessage,
+    } : current);
+    router.replace(`/video/${id}`);
+  }, [id, router]);
+
   const handleThumbnailReady = useCallback((
     thumbnailUrl: string,
     thumbnailVersion: number
   ) => {
-    setVideo((current) => current ? {
-      ...current,
-      thumbnailUrl,
-      thumbnailVersion,
-    } : current);
+    setVideo((current) => {
+      if (!current) return current;
+      if (current.thumbnailUrl) {
+        const existingBase = current.thumbnailUrl.split("?")[0];
+        const newBase = thumbnailUrl.split("?")[0];
+        if (existingBase === newBase && (current.thumbnailVersion ?? 0) === thumbnailVersion) {
+          return current;
+        }
+      }
+      return {
+        ...current,
+        thumbnailUrl,
+        thumbnailVersion,
+      };
+    });
+  }, []);
+
+  const clearThumbnailPreview = useCallback(() => {
+    if (thumbnailPreviewUrlRef.current) {
+      URL.revokeObjectURL(thumbnailPreviewUrlRef.current);
+      thumbnailPreviewUrlRef.current = null;
+    }
+    setThumbnailPreviewUrl(null);
+  }, []);
+
+  const handleThumbnailPreviewSelected = useCallback((file: File) => {
+    if (thumbnailPreviewUrlRef.current) {
+      URL.revokeObjectURL(thumbnailPreviewUrlRef.current);
+    }
+    const previewUrl = URL.createObjectURL(file);
+    thumbnailPreviewUrlRef.current = previewUrl;
+    setThumbnailPreviewUrl(previewUrl);
+  }, []);
+
+  const handleCustomThumbnailUploaded = useCallback((
+    thumbnailUrl: string,
+    thumbnailVersion: number
+  ) => {
+    handleThumbnailReady(thumbnailUrl, thumbnailVersion);
+    clearThumbnailPreview();
+  }, [clearThumbnailPreview, handleThumbnailReady]);
+
+  useEffect(() => () => {
+    if (thumbnailPreviewUrlRef.current) {
+      URL.revokeObjectURL(thumbnailPreviewUrlRef.current);
+    }
   }, []);
 
   const {
@@ -106,6 +168,7 @@ export default function VideoDetailPage({
   } = useVideoProcessingEvents(id, {
     enabled: !!video && (video.status || "").toLowerCase() !== "ready",
     onVideoReady: handleVideoCompleted,
+    onVideoFailed: handleVideoFailed,
     onThumbnailReady: handleThumbnailReady,
   });
 
@@ -126,7 +189,8 @@ export default function VideoDetailPage({
       if (remaining <= 0) {
         sessionStorage.setItem(redirectKey, "true");
         window.clearInterval(timer);
-        window.location.reload();
+        router.replace(`/video/${id}`);
+        router.refresh();
         return;
       }
       setCancelledCountdown(remaining);
@@ -135,7 +199,7 @@ export default function VideoDetailPage({
       window.clearTimeout(startTimer);
       window.clearInterval(timer);
     };
-  }, [durableVideoStatus, id]);
+  }, [durableVideoStatus, id, router]);
 
   // Handle 5 -> 4 -> 3 -> 2 -> 1 countdown tick
   useEffect(() => {
@@ -183,9 +247,9 @@ export default function VideoDetailPage({
       setIsDeleting(true);
       await VideoAPI.deleteVideo(video.id);
       toast.success("Video asset deleted successfully from library");
-      window.location.href = "/";
-    } catch {
-      toast.error("Failed to delete video asset");
+      router.push("/dashboard");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete video asset");
       setIsDeleting(false);
     }
   };
@@ -268,7 +332,7 @@ export default function VideoDetailPage({
         <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
           No video asset registered with ID: {id}
         </p>
-        <Link href="/">
+        <Link href="/dashboard">
           <Button variant="primary" size="sm">
             Back to Library
           </Button>
@@ -279,10 +343,14 @@ export default function VideoDetailPage({
 
   const effectiveStatus = (processingState?.video_status || video.status || "").toLowerCase();
   const displayVideo: Video = { ...video, status: effectiveStatus as Video["status"] };
+  const displayedThumbnailUrl = thumbnailPreviewUrl ?? video.thumbnailUrl;
   const isReady = ["ready", "done", "completed"].includes(effectiveStatus);
   const isCancelled = effectiveStatus === "cancelled";
+  const isFailed = effectiveStatus === "failed";
   const canCancel = ["uploaded", "processing", "finalizing"].includes(effectiveStatus) && !video.id.startsWith("vid_demo_");
   const canResume = effectiveStatus === "cancelled" && !video.id.startsWith("vid_demo_");
+  const canDelete = ["ready", "done", "completed", "failed", "cancelled"].includes(effectiveStatus)
+    && !video.id.startsWith("vid_demo_");
   const resolutionLabel = getResolutionLabel(video.width, video.height);
   const renditionsSummary = video.renditions.map((r) => r.resolution).join(", ");
 
@@ -301,7 +369,7 @@ export default function VideoDetailPage({
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-3">
             <Link
-              href="/"
+              href="/dashboard"
               className="flex cursor-pointer items-center justify-center rounded-xl border border-slate-200 p-2 text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-200"
             >
               <ArrowLeft className="h-4 w-4" />
@@ -311,8 +379,8 @@ export default function VideoDetailPage({
             </h1>
             <VideoStatusBadge status={displayVideo.status} />
           </div>
-          <p className="pl-11 font-mono text-xs text-slate-500 dark:text-slate-400">
-            Asset ID: <span className="font-medium text-slate-900 dark:text-slate-200">{video.id}</span> • Uploaded {formatDate(video.createdAt)}
+          <p className="pl-11 text-xs text-slate-500 dark:text-slate-400 font-sans">
+            Asset ID: <span className="font-mono text-slate-900 dark:text-slate-200">{video.id}</span> • Uploaded {formatDate(video.createdAt)}
           </p>
         </div>
       </div>
@@ -324,7 +392,7 @@ export default function VideoDetailPage({
             <>
               <VideoPlayer
                 src={video.playbackUrl}
-                poster={video.thumbnailUrl}
+                poster={displayedThumbnailUrl}
                 autoPlay={false}
                 deferLoadingUntilPlay
                 initialDuration={video.duration}
@@ -335,7 +403,7 @@ export default function VideoDetailPage({
               />
 
               <div className={cn(
-                "flex items-center justify-between rounded-2xl border p-4 font-mono text-xs shadow-xs",
+                "flex items-center justify-between rounded-2xl border p-4 font-sans text-xs shadow-xs",
                 "border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
               )}>
                 <div className="flex items-center gap-2 font-medium">
@@ -344,6 +412,28 @@ export default function VideoDetailPage({
                 </div>
               </div>
             </>
+          ) : isFailed ? (
+            <div className="relative flex flex-col items-center justify-center p-4 text-center font-sans">
+              <div className="relative overflow-hidden rounded-2xl w-full max-w-xl aspect-video shadow-md border border-slate-200 dark:border-slate-800/80">
+                <video
+                  src="/failed.mp4"
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                  className="h-full w-full object-cover rounded-2xl"
+                />
+              </div>
+              <h2 className="mt-5 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                Video processing failed
+              </h2>
+              <p className="mt-1.5 max-w-md font-sans text-xs text-slate-500 dark:text-slate-400">
+                This transcoding failure is terminal and cannot be retried. Please delete this asset and upload the video again.
+              </p>
+              <p className="mt-2 max-w-md font-mono text-xs text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 p-2.5 rounded-xl">
+                {processingState?.error || video.errorMessage || "The transcoding pipeline encountered a terminal error."}
+              </p>
+            </div>
           ) : isCancelled ? (
             <div className="relative flex flex-col items-center justify-center p-4 text-center">
               {cancelledCountdown !== null && (
@@ -361,10 +451,10 @@ export default function VideoDetailPage({
                   className="h-full w-full object-cover rounded-2xl"
                 />
               </div>
-              <h2 className="mt-5 text-lg font-semibold text-slate-900 dark:text-slate-100">
+              <h2 className="mt-5 text-lg font-semibold text-slate-900 dark:text-slate-100 font-sans">
                 Processing stopped. Your progress didn&apos;t.
               </h2>
-              <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400 max-w-md">
+              <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400 max-w-md font-sans">
                 Completed chunks are safe. Resume the remaining work whenever you&apos;re ready.
               </p>
             </div>
@@ -381,7 +471,7 @@ export default function VideoDetailPage({
 
           {isReady && (
             <div className="space-y-4 rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs dark:border-slate-800/60 dark:bg-[#111726]">
-              <h3 className="flex items-center gap-2 font-mono text-sm font-bold text-slate-900 dark:text-slate-100">
+              <h3 className="flex items-center gap-2 font-sans text-sm font-semibold text-slate-900 dark:text-slate-100">
                 <Layers className="h-4 w-4 shrink-0 text-sky-600 dark:text-sky-400" />
                 <span>Generated HLS Rendition Playlists</span>
               </h3>
@@ -391,22 +481,22 @@ export default function VideoDetailPage({
         </main>
 
         <aside className="space-y-4 xl:sticky xl:top-6">
-          <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs dark:border-slate-800/60 dark:bg-[#111726]">
-          <div className="border-b border-slate-200/80 px-3.5 py-2.5 dark:border-slate-800/80">
-            <h2 className="font-mono text-sm font-bold text-slate-900 dark:text-slate-100">Asset details</h2>
+          <div className="overflow-hidden rounded-lg border border-slate-200/80 bg-white shadow-xs dark:border-slate-800/60 dark:bg-[#111726]">
+          <div className="border-b border-slate-200/80 px-3.5 py-2.5 dark:border-slate-800/80 font-sans">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Asset Details</h2>
             <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">Thumbnail and source metadata</p>
           </div>
 
           <div className="space-y-3 p-3">
             <div className="space-y-2">
               <div className="group/preview relative aspect-video overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-slate-950">
-                {video.thumbnailUrl ? (
+                {displayedThumbnailUrl ? (
                   <>
                     <div
                       role="img"
                       aria-label={`Thumbnail for ${video.filename}`}
                       className="absolute inset-0 bg-cover bg-center transition-transform duration-300 group-hover/preview:scale-[1.02]"
-                      style={{ backgroundImage: `url(${JSON.stringify(video.thumbnailUrl).slice(1, -1)})` }}
+                      style={{ backgroundImage: `url(${JSON.stringify(displayedThumbnailUrl).slice(1, -1)})` }}
                     />
                     <button
                       type="button"
@@ -420,9 +510,9 @@ export default function VideoDetailPage({
                     </button>
                   </>
                 ) : (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-slate-400 dark:text-slate-600">
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-slate-400 dark:text-slate-600 font-sans">
                     <Film className="h-6 w-6" />
-                    <span className="font-mono text-[11px] uppercase tracking-wider">No thumbnail yet</span>
+                    <span className="text-[11px] uppercase tracking-wider">No thumbnail yet</span>
                   </div>
                 )}
               </div>
@@ -432,12 +522,14 @@ export default function VideoDetailPage({
                   <ThumbnailUploadButton
                     videoId={video.id}
                     filename={video.filename}
-                    onUploaded={handleThumbnailReady}
+                    onPreviewSelected={handleThumbnailPreviewSelected}
+                    onUploaded={handleCustomThumbnailUploaded}
+                    onUploadFailed={clearThumbnailPreview}
                     label="Replace thumbnail"
                     className="h-8.5 w-full border-sky-500/25 bg-sky-500/10 text-xs text-sky-700 shadow-none hover:bg-sky-500/15 dark:text-sky-300"
                   />
                 ) : (
-                  <div className="group/info relative flex items-center gap-2 rounded-lg border border-sky-200/80 bg-sky-50/70 p-2.5 font-mono text-[11px] text-sky-800 shadow-xs dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300">
+                  <div className="group/info relative flex items-center gap-2 rounded-lg border border-sky-200/80 bg-sky-50/70 p-2.5 font-sans text-[11px] text-sky-800 shadow-xs dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300">
                     <Info className="h-4 w-4 shrink-0 text-sky-600 dark:text-sky-400" />
                     <span className="leading-tight">
                       Autogenerated thumbnail will appear here with the highest resolution rendition.
@@ -451,36 +543,24 @@ export default function VideoDetailPage({
               )}
             </div>
 
-            <div className="divide-y divide-slate-200/80 border-y border-slate-200/80 font-mono dark:divide-slate-800/80 dark:border-slate-800/80">
+            <div className="divide-y divide-slate-200/80 border-y border-slate-200/80 font-sans dark:divide-slate-800/80 dark:border-slate-800/80">
               <div className="flex items-center justify-between gap-3 py-2">
-                <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500"><HardDrive className="h-3.5 w-3.5" /> Size</span>
-                <span className="text-xs font-bold text-slate-900 dark:text-slate-100">{formatBytes(video.size)}</span>
+                <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-slate-500"><HardDrive className="h-3.5 w-3.5" /> Size</span>
+                <span className="text-xs font-semibold text-slate-900 dark:text-slate-100 font-mono">{formatBytes(video.size)}</span>
               </div>
               <div className="flex items-center justify-between gap-3 py-2">
-                <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500"><Clock className="h-3.5 w-3.5" /> Duration</span>
-                <span className="text-xs font-bold text-slate-900 dark:text-slate-100">{formatDuration(video.duration)}</span>
+                <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-slate-500"><Clock className="h-3.5 w-3.5" /> Duration</span>
+                <span className="text-xs font-semibold text-slate-900 dark:text-slate-100 font-mono">{formatDuration(video.duration)}</span>
               </div>
               <div className="flex items-center justify-between gap-3 py-2">
-                <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500"><Maximize2 className="h-3.5 w-3.5" /> Resolution</span>
-                <span className="text-xs font-bold text-slate-900 dark:text-slate-100">{resolutionLabel}</span>
+                <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-slate-500"><Maximize2 className="h-3.5 w-3.5" /> Resolution</span>
+                <span className="text-xs font-semibold text-slate-900 dark:text-slate-100">{resolutionLabel}</span>
               </div>
               <div className="flex items-center justify-between gap-3 py-2">
-                <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500"><Layers className="h-3.5 w-3.5" /> Mime type</span>
-                <span className="max-w-[55%] truncate text-xs font-bold text-slate-900 dark:text-slate-100" title={video.mimeType || "video/mp4"}>{video.mimeType || "video/mp4"}</span>
+                <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-slate-500"><Layers className="h-3.5 w-3.5" /> Mime type</span>
+                <span className="max-w-[55%] truncate text-xs font-mono text-slate-900 dark:text-slate-100" title={video.mimeType || "video/mp4"}>{video.mimeType || "video/mp4"}</span>
               </div>
             </div>
-
-            {isReady && (
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setIsDeleteModalOpen(true)}
-                className="w-full h-8.5 text-xs"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                <span>Delete asset</span>
-              </Button>
-            )}
 
             {canCancel && (
               <Button
@@ -504,6 +584,18 @@ export default function VideoDetailPage({
               >
                 <RotateCcw className="h-3.5 w-3.5" />
                 <span>Resume Processing</span>
+              </Button>
+            )}
+
+            {canDelete && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setIsDeleteModalOpen(true)}
+                className="w-full h-8.5 text-xs"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Delete asset</span>
               </Button>
             )}
           </div>
@@ -532,14 +624,14 @@ export default function VideoDetailPage({
         onClose={() => setIsDeleteModalOpen(false)}
         onConfirm={handleConfirmDelete}
         title="Delete Video Asset?"
-        description={`Are you sure you want to delete "${video.filename}"? This will permanently remove the video asset and all generated adaptive HLS renditions (${renditionsSummary}).`}
+        description={`Are you sure you want to delete "${video.filename}"? This permanently removes the source, thumbnail, chunks, playlists, renditions, and all related processing records${renditionsSummary ? ` (${renditionsSummary})` : ""}.`}
         confirmText="Delete Asset"
         cancelText="Cancel"
         isDeleting={isDeleting}
         confirmationText={video.filename}
       />
 
-      {isThumbnailPreviewOpen && video.thumbnailUrl && (
+      {isThumbnailPreviewOpen && displayedThumbnailUrl && (
         <div
           role="dialog"
           aria-modal="true"
@@ -559,7 +651,7 @@ export default function VideoDetailPage({
             role="img"
             aria-label={`Thumbnail for ${video.filename}`}
             className="h-full w-full bg-contain bg-center bg-no-repeat"
-            style={{ backgroundImage: `url(${JSON.stringify(video.thumbnailUrl).slice(1, -1)})` }}
+            style={{ backgroundImage: `url(${JSON.stringify(displayedThumbnailUrl).slice(1, -1)})` }}
             onClick={(event) => event.stopPropagation()}
           />
           <div className="pointer-events-none absolute inset-x-6 bottom-5 truncate text-center font-mono text-xs text-white/70">

@@ -2,15 +2,21 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Film, Upload, Layers, Server, PanelLeftClose, PanelLeftOpen, BookOpen } from "lucide-react";
+import { Film, Upload, Layers, Server, PanelLeftClose, PanelLeftOpen, BookOpen, Globe } from "lucide-react";
 import { useSidebar } from "./sidebar-provider";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   {
-    name: "Video Library",
+    name: "Landing Page",
     href: "/",
+    icon: Globe,
+    external: false,
+  },
+  {
+    name: "Video Library",
+    href: "/dashboard",
     icon: Film,
     external: false,
   },
@@ -49,10 +55,10 @@ export function Sidebar() {
                 <Layers className="h-4 w-4" />
               </div>
               <div className="truncate">
-                <div className="font-mono text-sm font-bold tracking-wide text-slate-900 dark:text-slate-100 flex items-center gap-1">
+                <div className="font-sans text-sm font-bold tracking-tight text-slate-900 dark:text-slate-100 flex items-center gap-1">
                   TRANSCODE<span className="text-sky-600 dark:text-sky-400">.IO</span>
                 </div>
-                <p className="text-[10px] font-mono text-slate-400 dark:text-slate-500 tracking-wider uppercase">
+                <p className="text-[10px] font-sans text-slate-400 dark:text-slate-500 tracking-wider uppercase font-medium">
                   Distributed VOD
                 </p>
               </div>
@@ -121,24 +127,20 @@ export function Sidebar() {
             </div>
           </Tooltip>
         ) : (
-          <div className="rounded-xl border border-slate-200/80 dark:border-slate-800/60 bg-white dark:bg-slate-900/40 p-3.5 space-y-2.5 shadow-xs">
+          <div className="rounded-xl border border-slate-200/80 dark:border-slate-800/60 bg-white dark:bg-slate-900/40 p-3.5 space-y-2 shadow-xs">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-mono font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+              <span className="text-[11px] font-sans font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
                 <Server className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400 shrink-0" />
-                <span>Pipeline Engine</span>
-              </span>
-              <span className="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded font-semibold">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400 animate-pulse" />
-                READY
+                <span>Transcode Pipeline</span>
               </span>
             </div>
             
             {/* Resolutions stacked on next line */}
             <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 space-y-1">
-              <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-wider block font-semibold">
+              <span className="text-[10px] font-sans text-slate-400 dark:text-slate-500 uppercase tracking-wider block font-semibold">
                 Supported Renditions:
               </span>
-              <div className="text-[11px] font-mono font-bold text-slate-900 dark:text-slate-200 tracking-tight">
+              <div className="text-[11px] font-sans font-semibold text-slate-900 dark:text-slate-200 tracking-tight">
                 360p • 480p • 720p • 1080p • 1440p
               </div>
             </div>

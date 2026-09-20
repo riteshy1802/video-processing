@@ -9,12 +9,12 @@ from app.database import AsyncSessionLocal
 from app.services.s3 import s3_service
 from app.services.redis_publisher import publish_event_async
 from app.services.pipeline_cancellation import is_video_cancellation_requested
-from app.services.cancellation_service import settle_video_cancellation
+from app.services.pipeline_settlement import settle_stopped_video
 from datetime import datetime, timezone
-from video_finalizer.all_rendition_final import check_all_renditions_complete
-from video_finalizer.producer import (
-    get_video_finalizer_producer,
-    publish_video_finalizer_job,
+from app.services.outbox_service import enqueue_video_finalizer_job
+from app.core.failure_handling import (
+    PermanentJobError,
+    RetryableJobError,
 )
 
 # Rendition:
@@ -97,19 +97,23 @@ def parse_hls_playlist(content: str) -> list[tuple[float, str]]:
             duration = float(line.removeprefix("#EXTINF:").rstrip(","))
 
             if i + 1 >= len(lines):
-                raise ValueError("EXTINF entry has no segment URI")
+                raise PermanentJobError(
+                    "HLS playlist EXTINF entry has no segment URI"
+                )
 
             segment_name = lines[i + 1]
 
             if segment_name.startswith("#"):
-                raise ValueError(
+                raise PermanentJobError(
                     f"Expected segment URI after EXTINF, got: {segment_name}"
                 )
 
             segments.append((duration, segment_name))
 
     if not segments:
-        raise ValueError("Playlist contains no HLS segments")
+        raise PermanentJobError(
+            "Playlist contains no HLS segments"
+        )
 
     return segments
 
@@ -157,6 +161,10 @@ async def build_final_segment_plan_cancelable(
             s3_service.get_text_file,
             s3_key=playlist_key,
         )
+        if playlist_content is None:
+            raise RetryableJobError(
+                f"Chunk playlist is not available yet: {playlist_key}"
+            )
         for duration, segment_name in parse_hls_playlist(playlist_content):
             final_segments.append(
                 {
@@ -174,12 +182,7 @@ async def build_final_segment_plan_cancelable(
 
 async def settle_and_skip_cancelled_video(video_id: str) -> None:
     async with AsyncSessionLocal() as settlement_db:
-        await settle_video_cancellation(settlement_db, uuid.UUID(video_id))
-
-
-def publish_video_finalization(producer, video_id: str) -> None:
-    publish_video_finalizer_job(producer=producer, video_id=video_id)
-    producer.flush()
+        await settle_stopped_video(settlement_db, uuid.UUID(video_id))
 
 
 async def finalize_rendition(
@@ -195,131 +198,149 @@ async def finalize_rendition(
         rendition_uuid = (
             uuid.UUID(rendition_id) if isinstance(rendition_id, str) else rendition_id
         )
-    except ValueError:
-        logger.error(f"Invalid rendition UUID string: '{rendition_id}'")
-        return False
+    except (ValueError, TypeError) as exc:
+        raise PermanentJobError(
+            f"Invalid rendition UUID: {rendition_id}"
+        ) from exc
 
+    # Snapshot the required rows, then release the DB connection before any S3
+    # reads/copies. The final state transition is performed in a fresh session.
     async with AsyncSessionLocal() as db:
         rendition = await rendition_repository.get_by_id(
             db, rendition_id=rendition_uuid
         )
         if rendition is None:
-            logger.warning(
-                f"Rendition {rendition_id} does not exist in database. Skipping."
+            raise PermanentJobError(
+                f"Rendition does not exist in database: rendition_id={rendition_id}"
             )
-            return False
-
         video_id = str(rendition.video_id)
-        if await is_video_cancellation_requested(video_id, cancel_event):
-            logger.info(
-                "Skipping rendition finalization %s because video %s is cancelling/cancelled",
-                rendition_id,
-                video_id,
-            )
-            await settle_and_skip_cancelled_video(video_id)
-            return True
-
-        if rendition.status != "PROCESSING":
-            logger.info(
-                f"Rendition {rendition_id} is {rendition.status}; skipping finalization."
-            )
-            return False
-
+        rendition_status = rendition.status
+        resolution = rendition.resolution
+        final_prefix = rendition.s3_prefix.rstrip("/")
+        processing_started_at = rendition.processing_started_at
+        created_at = rendition.created_at
         chunks = await chunk_repository.get_by_rendition_id(
             db, rendition_id=rendition_uuid
         )
-        if not chunks:
-            logger.warning(f"No chunks found for rendition {rendition_id}. Skipping.")
-            return False
 
-        if any(chunk.status != "DONE" for chunk in chunks):
-            logger.info(
-                f"Rendition {rendition_id} is not ready for finalization (pending chunks). Skipping."
-            )
-            return False
-
-        await publish_event_async(
+    if await is_video_cancellation_requested(video_id, cancel_event):
+        logger.info(
+            "Skipping rendition finalization %s because video %s is cancelling/cancelled",
+            rendition_id,
             video_id,
-            {
-                "type": "rendition.processing",
-                "video_id": video_id,
-                "rendition_id": str(rendition.id),
-                "resolution": str(rendition.resolution),
-                "status": "PROCESSING",
-            },
+        )
+        await settle_and_skip_cancelled_video(video_id)
+        return True
+
+    if rendition_status != "PROCESSING":
+        logger.info(
+            f"Rendition {rendition_id} is {rendition_status}; skipping finalization."
+        )
+        return False
+
+    if not chunks:
+        raise PermanentJobError(
+            f"No chunks found for rendition_id={rendition_id}"
         )
 
-        print("=" * 60)
-        print(f"  Finalizing Rendition : {rendition.id} ({rendition.resolution}p)")
-        print(f"  Total Chunks         : {len(chunks)}")
-
-        final_segments = await build_final_segment_plan_cancelable(
-            chunks,
-            video_id,
-            cancel_event,
+    if any(chunk.status != "DONE" for chunk in chunks):
+        logger.info(
+            f"Rendition {rendition_id} is not ready for finalization (pending chunks). Skipping."
         )
-        if final_segments is None:
+        return False
+
+    await publish_event_async(
+        video_id,
+        {
+            "type": "rendition.processing",
+            "video_id": video_id,
+            "rendition_id": str(rendition_uuid),
+            "resolution": str(resolution),
+            "status": "PROCESSING",
+        },
+    )
+
+    print("=" * 60)
+    print(f"  Finalizing Rendition : {rendition_uuid} ({resolution}p)")
+    print(f"  Total Chunks         : {len(chunks)}")
+
+    final_segments = await build_final_segment_plan_cancelable(
+        chunks,
+        video_id,
+        cancel_event,
+    )
+    if final_segments is None:
+        logger.info(
+            "Stopped rendition assembly %s because video %s was cancelled",
+            rendition_id,
+            video_id,
+        )
+        await settle_and_skip_cancelled_video(video_id)
+        return True
+
+    print(f"Total final segments: {len(final_segments)}")
+
+    for segment in final_segments:
+        if await is_video_cancellation_requested(video_id, cancel_event):
             logger.info(
-                "Stopped rendition assembly %s because video %s was cancelled",
+                "Stopped rendition copy work %s because video %s was cancelled",
                 rendition_id,
                 video_id,
             )
             await settle_and_skip_cancelled_video(video_id)
             return True
-
-        print(f"Total final segments: {len(final_segments)}")
-
-        final_prefix = rendition.s3_prefix.rstrip("/")
-
-        for segment in final_segments:
-            if await is_video_cancellation_requested(video_id, cancel_event):
-                logger.info(
-                    "Stopped rendition copy work %s because video %s was cancelled",
-                    rendition_id,
-                    video_id,
-                )
-                await settle_and_skip_cancelled_video(video_id)
-                return True
-            destination_key = f"{final_prefix}/segments/{segment['final_name']}"
-            await asyncio.to_thread(
-                s3_service.copy_object,
-                source_key=segment["source_key"],
-                destination_key=destination_key,
+        destination_key = f"{final_prefix}/segments/{segment['final_name']}"
+        copied = await asyncio.to_thread(
+            s3_service.copy_object,
+            source_key=segment["source_key"],
+            destination_key=destination_key,
+        )
+        if not copied:
+            raise RetryableJobError(
+                f"Failed to copy rendition segment to {destination_key}"
             )
-            print(
-                f"Chunk {segment['chunk_index']:03d} | "
-                f"{segment['source_key']} "
-                f"-> {segment['final_name']} "
-                f"({segment['duration']:.6f}s)"
-            )
-
-        final_playlist = generate_final_playlist(final_segments)
-        final_playlist_key = f"{final_prefix}/index.m3u8"
-
-        if await is_video_cancellation_requested(video_id, cancel_event):
-            await settle_and_skip_cancelled_video(video_id)
-            return True
-        await asyncio.to_thread(
-            s3_service.put_text_file,
-            s3_key=final_playlist_key,
-            content=final_playlist,
+        print(
+            f"Chunk {segment['chunk_index']:03d} | "
+            f"{segment['source_key']} "
+            f"-> {segment['final_name']} "
+            f"({segment['duration']:.6f}s)"
         )
 
-        print(f"Final playlist uploaded: {final_playlist_key}")
+    final_playlist = generate_final_playlist(final_segments)
+    final_playlist_key = f"{final_prefix}/index.m3u8"
 
-        completed_at = datetime.now(timezone.utc)
-        processing_time_seconds = None
-        if rendition.processing_started_at is not None:
-            processing_time_seconds = (
-                completed_at - rendition.processing_started_at
-            ).total_seconds()
-        elif rendition.created_at is not None:
-            processing_time_seconds = (
-                completed_at - rendition.created_at
-            ).total_seconds()
+    if await is_video_cancellation_requested(video_id, cancel_event):
+        await settle_and_skip_cancelled_video(video_id)
+        return True
+    await asyncio.to_thread(
+        s3_service.put_text_file,
+        s3_key=final_playlist_key,
+        content=final_playlist,
+    )
 
+    print(f"Final playlist uploaded: {final_playlist_key}")
+
+    completed_at = datetime.now(timezone.utc)
+    processing_time_seconds = None
+    if processing_started_at is not None:
+        processing_time_seconds = (
+            completed_at - processing_started_at
+        ).total_seconds()
+    elif created_at is not None:
+        processing_time_seconds = (
+            completed_at - created_at
+        ).total_seconds()
+
+    async with AsyncSessionLocal() as db:
+        current_rendition = await rendition_repository.get_by_id(
+            db, rendition_id=rendition_uuid
+        )
+        if current_rendition is None:
+            raise PermanentJobError(
+                f"Rendition disappeared during finalization: {rendition_id}"
+            )
         current_video_status = await video_repository.get_status_for_update(
-            db, rendition.video_id
+            db, current_rendition.video_id
         )
         if current_video_status != "PROCESSING":
             await db.rollback()
@@ -334,62 +355,54 @@ async def finalize_rendition(
 
         marked_ready = await rendition_repository.mark_ready_if_processing(
             db,
-            rendition.id,
+            current_rendition.id,
             final_playlist_key,
             completed_at,
             processing_time_seconds,
         )
+        all_ready = False
+        if marked_ready:
+            await db.flush()
+            all_ready = await rendition_repository.are_all_renditions_completed(
+                db, current_rendition.video_id
+            )
+            if all_ready:
+                await enqueue_video_finalizer_job(db, current_rendition.video_id)
         await db.commit()
 
-        if not marked_ready:
-            logger.info(
-                f"Rendition {rendition_id} was cancelled during finalization; "
-                "not publishing READY or video finalization work."
-            )
-            return False
+    if not marked_ready:
+        logger.info(
+            f"Rendition {rendition_id} was cancelled during finalization; "
+            "not publishing READY or video finalization work."
+        )
+        return False
 
-        await publish_event_async(
+    await publish_event_async(
+        video_id,
+        {
+            "type": "rendition.ready",
+            "video_id": video_id,
+            "rendition_id": str(rendition_uuid),
+            "resolution": str(resolution),
+            "status": "READY",
+        },
+    )
+
+    if all_ready:
+        logger.info(
+            "Queued video finalization transactionally for video %s",
             video_id,
-            {
-                "type": "rendition.ready",
-                "video_id": video_id,
-                "rendition_id": str(rendition.id),
-                "resolution": str(rendition.resolution),
-                "status": "READY",
-            },
         )
 
-        all_ready = await check_all_renditions_complete(video_id)
-        if all_ready:
-            current_video_status = await video_repository.get_status(
-                db, rendition.video_id
-            )
-            if current_video_status != "PROCESSING":
-                logger.info(
-                    f"Video {video_id} is {current_video_status}; not publishing "
-                    "video finalization work."
-                )
-                if current_video_status in {"CANCELLING", "CANCELLED"}:
-                    await settle_and_skip_cancelled_video(video_id)
-                return True
-            producer = get_video_finalizer_producer()
-            if producer is None:
-                raise RuntimeError("Could not initialize video finalizer producer")
-            await asyncio.to_thread(
-                publish_video_finalization,
-                producer,
-                video_id,
-            )
+    chunks_prefix = f"{final_prefix}/chunks"
+    try:
+        await asyncio.to_thread(s3_service.delete_prefix, chunks_prefix)
+    except Exception as cleanup_error:
+        # Cleanup is best-effort. A missing ListBucket/DeleteObject IAM
+        # permission must not turn a completed rendition into a failed one
+        # or prevent the video finalizer from being published.
+        logger.warning(
+            f"Could not delete temporary chunk prefix {chunks_prefix}: {cleanup_error}"
+        )
 
-        chunks_prefix = f"{final_prefix}/chunks"
-        try:
-            await asyncio.to_thread(s3_service.delete_prefix, chunks_prefix)
-        except Exception as cleanup_error:
-            # Cleanup is best-effort. A missing ListBucket/DeleteObject IAM
-            # permission must not turn a completed rendition into a failed one
-            # or prevent the video finalizer from being published.
-            logger.warning(
-                f"Could not delete temporary chunk prefix {chunks_prefix}: {cleanup_error}"
-            )
-
-        return True
+    return True

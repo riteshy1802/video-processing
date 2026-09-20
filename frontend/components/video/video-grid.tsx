@@ -18,6 +18,8 @@ interface VideoGridProps {
   hasMore?: boolean;
   isLoadingMore?: boolean;
   onLoadMore?: () => void;
+  onSearchChange?: (query: string) => void;
+  isSearching?: boolean;
 }
 
 const STATUS_OPTIONS = [
@@ -37,31 +39,39 @@ export function VideoGrid({
   hasMore = false,
   isLoadingMore = false,
   onLoadMore,
+  onSearchChange,
+  isSearching = false,
 }: VideoGridProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (isLoading) return;
+    const timer = setTimeout(() => {
+      onSearchChange?.(searchQuery);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery, onSearchChange]);
+
+  const effectiveHasMore = isSearching ? false : hasMore;
+
+  useEffect(() => {
+    if (isLoading || isSearching) return;
 
     const target = loadMoreRef.current;
-    if (!target || !hasMore || isLoadingMore || !onLoadMore) return;
+    if (!target || !effectiveHasMore || isLoadingMore || !onLoadMore) return;
 
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting) onLoadMore();
+        if (entry.isIntersecting && !isLoadingMore) onLoadMore();
       },
-      { rootMargin: "240px 0px" }
+      { rootMargin: "100px 0px" }
     );
     observer.observe(target);
     return () => observer.disconnect();
-  }, [hasMore, isLoading, isLoadingMore, onLoadMore]);
+  }, [effectiveHasMore, isLoading, isLoadingMore, isSearching, onLoadMore]);
 
   const filteredVideos = videos.filter((video) => {
-    const matchesSearch = video.filename
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase());
     const statusLower = (video.status || "").toLowerCase();
     const matchesStatus =
       statusFilter === "all"
@@ -69,7 +79,7 @@ export function VideoGrid({
         : statusFilter === "cancelled"
         ? statusLower === "cancelled" || statusLower === "canceled" || statusLower === "cancelling"
         : video.status === statusFilter;
-    return matchesSearch && matchesStatus;
+    return matchesStatus;
   });
 
   if (isLoading) {
@@ -90,18 +100,22 @@ export function VideoGrid({
         </div>
         <div className="space-y-2">
           <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">
-            No videos in your library
+            {searchQuery ? "No videos matched your search query" : "No videos in your library"}
           </h3>
           <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-            Upload your first video file. It will be transcoded automatically into multi-resolution adaptive HLS streams (360p up to 1440p based on source resolution).
+            {searchQuery
+              ? `No video assets were found matching "${searchQuery}". Try a different filename.`
+              : "Upload your first video file. It will be transcoded automatically into multi-resolution adaptive HLS streams (360p up to 1440p based on source resolution)."}
           </p>
         </div>
-        <Link href="/upload">
-          <Button variant="primary" size="md">
-            <Upload className="h-4 w-4" />
-            <span>Upload Your First Video</span>
-          </Button>
-        </Link>
+        {!searchQuery && (
+          <Link href="/upload">
+            <Button variant="primary" size="md">
+              <Upload className="h-4 w-4" />
+              <span>Upload Your First Video</span>
+            </Button>
+          </Link>
+        )}
       </div>
     );
   }
@@ -115,16 +129,16 @@ export function VideoGrid({
           <Search className="h-4 w-4 text-slate-400 shrink-0 pointer-events-none" />
           <input
             type="text"
-            placeholder="Filter by filename..."
+            placeholder="Search by filename..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-transparent border-0 p-0 text-xs font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-0 leading-none"
+            className="w-full bg-transparent border-0 p-0 text-xs font-sans text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-0 leading-none"
           />
         </div>
 
         {/* Filter Dropdown & Refresh Action */}
         <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end h-10">
-          <div className="flex items-center gap-2 font-mono text-xs text-slate-600 dark:text-slate-400">
+          <div className="flex items-center gap-2 font-sans text-xs text-slate-600 dark:text-slate-400">
             <Filter className="h-3.5 w-3.5 text-slate-400 shrink-0" />
             <span>Status:</span>
             
@@ -142,7 +156,7 @@ export function VideoGrid({
                 variant="outline"
                 size="sm"
                 onClick={onRefresh}
-                className="text-slate-600 dark:text-slate-400 h-9"
+                className="text-slate-600 dark:text-slate-400 h-9 cursor-pointer"
               >
                 <RefreshCw className="h-3.5 w-3.5" />
               </Button>
@@ -153,7 +167,7 @@ export function VideoGrid({
 
       {/* Grid Container */}
       {filteredVideos.length === 0 ? (
-        <div className="p-8 text-center border border-slate-200 dark:border-slate-800 rounded-2xl font-mono text-xs text-slate-500 dark:text-slate-400 bg-white dark:bg-[#111726]">
+        <div className="p-8 text-center border border-slate-200 dark:border-slate-800 rounded-2xl font-sans text-xs text-slate-500 dark:text-slate-400 bg-white dark:bg-[#111726]">
           No videos matched your filter criteria.
         </div>
       ) : (
@@ -166,15 +180,17 @@ export function VideoGrid({
 
       <div
         ref={loadMoreRef}
-        className="flex min-h-10 items-center justify-center font-mono text-xs text-slate-500 dark:text-slate-400"
+        className="flex min-h-10 items-center justify-center font-sans text-xs text-slate-500 dark:text-slate-400"
         aria-live="polite"
       >
-        {isLoadingMore ? (
+        {isSearching ? (
+          <span>{filteredVideos.length} search result{filteredVideos.length === 1 ? "" : "s"} found</span>
+        ) : isLoadingMore ? (
           <span className="flex items-center gap-2">
             <LoaderCircle className="h-4 w-4 animate-spin text-sky-500" />
             Loading more videos…
           </span>
-        ) : hasMore ? (
+        ) : effectiveHasMore ? (
           <span>Scroll to load more videos</span>
         ) : (
           <span>All videos loaded</span>

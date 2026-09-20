@@ -8,7 +8,7 @@ from app.repositories.video_repository import video_repository
 from app.services.redis_publisher import get_async_redis_client
 
 
-CANCELLATION_STATUSES = {"CANCELLING", "CANCELLED"}
+STOP_PROCESSING_STATUSES = {"CANCELLING", "CANCELLED", "FAILING", "FAILED"}
 
 
 async def is_video_cancellation_requested(
@@ -26,7 +26,7 @@ async def is_video_cancellation_requested(
         return False
     async with AsyncSessionLocal() as db:
         status = await video_repository.get_status(db, video_uuid)
-    return status in CANCELLATION_STATUSES
+    return status in STOP_PROCESSING_STATUSES
 
 
 async def listen_for_video_cancellations(

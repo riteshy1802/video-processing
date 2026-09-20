@@ -49,6 +49,9 @@ class Chunk(Base):
     progress_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     worker_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     processing_started_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True

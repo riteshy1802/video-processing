@@ -1,4 +1,4 @@
-.PHONY: help start-all install backend planner worker finalizer video-finalizer frontend infra infra-down init-kafka kafka-init check-topic dashboard kafka-ui produce-planner-job produce-planner produce-worker-job produce-worker produce-finalizer-job produce-finalizer produce-video-finalizer-job produce-video-jobs-finalizer produce-video-finalizer migrate test build clean
+.PHONY: help start-all stop-all stop-processes install backend planner worker finalizer video-finalizer outbox reconciler frontend infra infra-down init-kafka kafka-init check-topic dashboard kafka-ui produce-planner-job produce-planner produce-worker-job produce-worker produce-finalizer-job produce-finalizer produce-video-finalizer-job produce-video-jobs-finalizer produce-video-finalizer migrate test build clean
 
 PORT ?= 7500
 TOPIC ?= $(or $(topic),planner.jobs)
@@ -9,12 +9,16 @@ help:
 	@echo "Distributed Video Transcoding Platform - Management Commands"
 	@echo "=========================================================================="
 	@echo "  make start-all                  - Launch full cluster (1x frontend, 1x backend, 2x planners, 3x workers, 2x finalizers, 2x video finalizers) in separate terminal windows"
+	@echo "  make stop-processes             - Gracefully stop all project application processes and managed terminals"
+	@echo "  make stop-all                   - Stop all project processes, managed terminals, Kafka, Redis, and Kafka UI"
 	@echo "  make install                    - Install backend Python dependencies and frontend packages"
 	@echo "  make backend                    - Start FastAPI backend server on port $(PORT)"
 	@echo "  make planner                    - Start Planner consumer process"
 	@echo "  make worker                     - Start Worker consumer process"
 	@echo "  make finalizer                  - Start Rendition Finalizer consumer process"
 	@echo "  make video-finalizer            - Start Video Asset Finalizer consumer process"
+	@echo "  make outbox                     - Start transactional outbox dispatcher"
+	@echo "  make reconciler                 - Start periodic pipeline reconciler"
 	@echo "  make frontend                   - Start Next.js frontend dev server (http://localhost:3000)"
 	@echo "  make infra                      - Start Kafka & UI Dashboard (cd backend/infrastructure/kafka && docker compose up -d)"
 	@echo "  make infra-down                 - Stop Kafka infrastructure (cd backend/infrastructure/kafka && docker compose down)"
@@ -33,6 +37,12 @@ help:
 start-all:
 	@echo "Launching full cluster in separate terminal windows..."
 	./start_platform.sh
+
+stop-processes:
+	@./stop_platform.sh
+
+stop-all:
+	@./stop_platform.sh --infra
 
 
 
@@ -61,6 +71,14 @@ finalizer:
 video-finalizer:
 	@echo "Starting Video Asset Finalizer process..."
 	cd backend && .venv/bin/python -m video_finalizer.main
+
+outbox:
+	@echo "Starting Transactional Outbox Dispatcher..."
+	cd backend && .venv/bin/python -m outbox.main
+
+reconciler:
+	@echo "Starting Pipeline Reconciler..."
+	cd backend && .venv/bin/python -m reconciler.main
 
 frontend:
 	@echo "Starting Next.js frontend on http://localhost:3000..."
@@ -140,4 +158,3 @@ clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
 	rm -rf frontend/.next
-

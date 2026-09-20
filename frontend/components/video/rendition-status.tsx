@@ -42,8 +42,8 @@ export function RenditionStatusList({
           <div
             key={rendition.resolution}
             className={cn(
-              "p-4 rounded-xl border transition-all font-mono text-xs shadow-xs space-y-3 flex flex-col justify-between",
-              isProcessing && "bg-sky-50 dark:bg-sky-500/10 border-sky-300 dark:border-sky-500/40 shadow-sm animate-transcode",
+              "p-3.5 rounded-xl border transition-all font-sans text-xs shadow-xs space-y-2.5 flex flex-col justify-between",
+              isProcessing && "bg-sky-50/50 dark:bg-sky-500/10 border-sky-300 dark:border-sky-500/40 shadow-xs",
               isReady && "bg-white dark:bg-slate-900/60 border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100",
               isQueued && "bg-slate-50 dark:bg-slate-950/40 border-slate-200 dark:border-slate-800/80 text-slate-500 dark:text-slate-400",
               isFailed && "bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300"
@@ -53,7 +53,7 @@ export function RenditionStatusList({
               <div className="flex items-center gap-2.5">
                 <div
                   className={cn(
-                    "w-12 h-7 rounded-lg flex items-center justify-center font-bold text-[11px]",
+                    "w-12 h-7 rounded-md flex items-center justify-center font-sans font-semibold text-[11px]",
                     isReady && "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20",
                     isProcessing && "bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-300 border border-sky-300 dark:border-sky-400/30",
                     isQueued && "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700",
@@ -63,7 +63,7 @@ export function RenditionStatusList({
                   {rendition.resolution}
                 </div>
                 <div>
-                  <div className="font-sans font-bold text-slate-900 dark:text-slate-100 text-sm">
+                  <div className="font-sans font-semibold text-slate-900 dark:text-slate-100 text-sm">
                     {rendition.resolution === "1440p"
                       ? "1440p 2K QHD"
                       : rendition.resolution === "1080p"
@@ -80,7 +80,7 @@ export function RenditionStatusList({
               <WorkerNodeBadge status={rendition.status} workerId={rendition.workerId} />
             </div>
 
-            <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 font-sans pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
               <span>
                 {isProcessing && "Kafka Consumer Task Active"}
                 {isReady && (rendition.processingTime !== undefined && rendition.processingTime !== null ? `Completed in ${formatProcessingTime(rendition.processingTime)}` : "Ready for streaming")}
@@ -88,7 +88,7 @@ export function RenditionStatusList({
                 {isFailed && (rendition.error || "Transcode error")}
               </span>
               {rendition.workerId && (
-                <span className="text-slate-700 dark:text-slate-300 font-bold">
+                <span className="font-mono text-[11px] text-slate-700 dark:text-slate-300 font-medium">
                   {rendition.workerId.replace("worker-", "Worker-")}
                 </span>
               )}

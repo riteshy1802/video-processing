@@ -6,8 +6,8 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatBytes(bytes: number, decimals = 1): string {
-  if (!bytes || bytes === 0) return "0 B";
+export function formatBytes(bytes?: number, decimals = 1): string {
+  if (bytes === undefined || bytes === null || isNaN(bytes) || bytes <= 0) return "0 B";
   const k = 1024;
   const dm = decimals < 0 ? 0 : decimals;
   const sizes = ["B", "KB", "MB", "GB", "TB"];
@@ -16,7 +16,7 @@ export function formatBytes(bytes: number, decimals = 1): string {
 }
 
 export function formatDuration(seconds?: number): string {
-  if (seconds === undefined || seconds === null || isNaN(seconds)) return "--:--";
+  if (seconds === undefined || seconds === null || isNaN(seconds) || seconds < 0) return "--:--";
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   if (mins >= 60) {
@@ -27,7 +27,7 @@ export function formatDuration(seconds?: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
-export function formatDate(dateString: string): string {
+export function formatDate(dateString?: string): string {
   if (!dateString) return "";
   const date = new Date(dateString);
   if (isNaN(date.getTime())) return dateString;

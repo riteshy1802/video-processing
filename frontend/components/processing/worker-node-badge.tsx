@@ -15,6 +15,15 @@ export function WorkerNodeBadge({ status, workerId, workerDisplay, className }: 
   const displayLabel = workerDisplay || workerId || "";
   const isWaiting = displayLabel === "Waiting for worker" || displayLabel === "No workers" || !displayLabel;
 
+  if (displayLabel === "Scheduled for retry" || displayLabel.startsWith("Recovering")) {
+    return (
+      <div className={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono font-medium bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-500/30", className)}>
+        <Clock className="h-3 w-3 shrink-0" />
+        <span>{displayLabel.startsWith("Recovering") ? "Recovering" : "Retrying"}</span>
+      </div>
+    );
+  }
+
   if (statusLower === "processing") {
     if (isWaiting || displayLabel === "Waiting for worker") {
       return (

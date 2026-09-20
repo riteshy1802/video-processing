@@ -9,7 +9,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isDocs = pathname?.startsWith('/docs');
 
-  if (isDocs) {
+  const isLanding = pathname === '/';
+  const isDashboardRoute = pathname === '/dashboard' || pathname === '/upload' || pathname?.startsWith('/video/');
+
+  if (isDocs || isLanding || !isDashboardRoute) {
     return <>{children}</>;
   }
 

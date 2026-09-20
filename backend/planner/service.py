@@ -3,22 +3,45 @@ import uuid
 import asyncio
 import json
 import logging
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.repositories.video_repository import video_repository
 from app.repositories.rendition_repository import rendition_repository
+from app.repositories.chunk_repository import chunk_repository
 from app.models.rendition import Rendition
 from app.models.chunk import Chunk
 from app.services.s3 import s3_service
-from app.services.pipeline_cancellation import is_video_cancellation_requested
 from app.services.redis_publisher import publish_event_async
-from worker.producer import get_worker_producer, publish_chunk
+from app.services.outbox_service import enqueue_transcode_job
+from app.core.failure_handling import PermanentJobError
 
 logger = logging.getLogger("planner")
 AVAILABLE_RENDITIONS = settings.SUPPORTED_RENDITIONS
 
 
 FPS_PROBE_TIMEOUT_SECONDS = 8.0
+
+
+async def enqueue_transcode_frontier(
+    db: AsyncSession,
+    video_id: uuid.UUID,
+    chunk_ids: list[str],
+    cancel_event: asyncio.Event | None,
+) -> int:
+    """Durably enqueue only still-required chunk work in the current transaction."""
+    if cancel_event is not None and cancel_event.is_set():
+        return 0
+    if await video_repository.get_status(db, video_id) != "PROCESSING":
+        return 0
+
+    queued_count = 0
+    for chunk_id in chunk_ids:
+        if cancel_event is not None and cancel_event.is_set():
+            break
+        if await enqueue_transcode_job(db, chunk_id):
+            queued_count += 1
+    return queued_count
 
 
 def select_source_frame_rate(
@@ -186,70 +209,100 @@ async def plan_video_async(
     cancel_event: asyncio.Event | None = None,
 ) -> bool:
     """
-    Async implementation that executes in a single database transaction
-    and commits all Rendition, Chunk, and VideoEvent records atomically.
+    Probe outside a database transaction, then create all Rendition, Chunk,
+    VideoEvent, and outbox records in one atomic transaction.
     Handles rollback cleanly without leaving open transactions or unhandled exceptions.
     Returns True if video was planned, False if skipped or invalid.
     """
     try:
         video_uuid = uuid.UUID(video_id) if isinstance(video_id, str) else video_id
-    except ValueError:
-        logger.error(f"Invalid video UUID string: '{video_id}'")
-        return False
+    except (ValueError, TypeError) as exc:
+        raise PermanentJobError(
+            f"Invalid video UUID: {video_id}"
+        ) from exc
+
+    # Read only the source metadata, then close the transaction before ffprobe.
+    # ffprobe can take several seconds and must not occupy a pooled DB session.
+    async with AsyncSessionLocal() as db:
+        video = await video_repository.get_by_id(db, video_uuid)
+        if video is None:
+            raise PermanentJobError(
+                f"Video does not exist in database: video_id={video_id}"
+            )
+
+        if video.status in {"CANCELLING", "CANCELLED", "FAILING", "FAILED"}:
+            logger.info(
+                "Skipping planner job for video %s because status is %s",
+                video_id,
+                video.status,
+            )
+            return True
+
+        # A duplicate planner message reasserts pending outbox work without
+        # creating a second graph.
+        if video.status == "PROCESSING":
+            existing_renditions = await rendition_repository.get_by_video_id(
+                db, video.id
+            )
+            pending_ids = await chunk_repository.get_pending_ids_for_renditions(
+                db,
+                [rendition.id for rendition in existing_renditions],
+            )
+            if pending_ids:
+                queued_count = await enqueue_transcode_frontier(
+                    db,
+                    video.id,
+                    [str(chunk_id) for chunk_id in pending_ids],
+                    cancel_event,
+                )
+                await db.commit()
+                logger.info(
+                    "Planner retry queued %s pending chunk job(s) for video %s",
+                    queued_count,
+                    video.id,
+                )
+            else:
+                logger.info(
+                    "Planner retry found no pending chunks for video %s",
+                    video.id,
+                )
+            return True
+
+        if video.status != "UPLOADED":
+            logger.info(
+                f"Skipping video {video_id}: current status is '{video.status}' (expected 'UPLOADED')."
+            )
+            return False
+
+        if video.source_height is None or video.duration_seconds is None:
+            raise PermanentJobError(
+                f"Video {video_id} missing required metadata: "
+                f"height={video.source_height}, duration={video.duration_seconds}"
+            )
+
+        if await rendition_repository.has_renditions(db, video.id):
+            logger.info(f"Video {video.id} has already been planned. Skipping.")
+            return False
+
+        resolutions = determine_renditions(video.source_height)
+        if not resolutions:
+            raise PermanentJobError(
+                f"No supported rendition for source height={video.source_height}p"
+            )
+        chunk_ranges = determine_chunks(video.duration_seconds)
+
+    source_frame_rate = await probe_source_frame_rate(video, cancel_event)
 
     async with AsyncSessionLocal() as db:
         try:
-            # 1. Fetch the video
-            video = await video_repository.get_by_id(db, video_uuid)
-
+            # Lock and re-read after ffprobe so cancellation or a duplicate
+            # planner cannot race the graph creation.
+            video = await video_repository.get_by_id_for_update(db, video_uuid)
             if video is None:
-                logger.warning(
-                    f"Video {video_id} does not exist in database. Skipping."
+                raise PermanentJobError(
+                    f"Video does not exist in database: video_id={video_id}"
                 )
-                return False
-
-            if video.status in {"CANCELLING", "CANCELLED"}:
-                logger.info(
-                    "Skipping planner job for video %s because status is %s",
-                    video_id,
-                    video.status,
-                )
-                return True
-
-            # 2. Make sure upload has completed
-            if video.status != "UPLOADED":
-                logger.info(
-                    f"Skipping video {video_id}: current status is '{video.status}' (expected 'UPLOADED')."
-                )
-                return False
-
-            # 3. Validate metadata required by planner
-            if video.source_height is None or video.duration_seconds is None:
-                logger.warning(
-                    f"Video {video_id} missing required metadata (height={video.source_height}, duration={video.duration_seconds}). Skipping."
-                )
-                return False
-
-            # 4. Check whether we've already planned this video
-            is_planned_already = await rendition_repository.has_renditions(db, video.id)
-            if is_planned_already:
-                logger.info(f"Video {video.id} has already been planned. Skipping.")
-                return False
-
-            # 5. Determine renditions & chunk ranges
-            resolutions = determine_renditions(video.source_height)
-            if not resolutions:
-                logger.warning(
-                    f"No supported rendition for source height {video.source_height}p. Skipping."
-                )
-                return False
-
-            chunk_ranges = determine_chunks(video.duration_seconds)
-
-            video.source_frame_rate = await probe_source_frame_rate(video, cancel_event)
-
-            await db.refresh(video, attribute_names=["status"])
-            if video.status in {"CANCELLING", "CANCELLED"} or (
+            if video.status in {"CANCELLING", "CANCELLED", "FAILING", "FAILED"} or (
                 cancel_event is not None and cancel_event.is_set()
             ):
                 logger.info(
@@ -258,6 +311,22 @@ async def plan_video_async(
                 )
                 await db.rollback()
                 return True
+
+            if video.status != "UPLOADED":
+                await db.rollback()
+                logger.info(
+                    "Planner lost its UPLOADED claim for video %s; status=%s",
+                    video_id,
+                    video.status,
+                )
+                return video.status == "PROCESSING"
+
+            if await rendition_repository.has_renditions(db, video.id):
+                await db.rollback()
+                logger.info("Video %s was planned by another consumer", video.id)
+                return True
+
+            video.source_frame_rate = source_frame_rate
 
             logger.info(
                 f"Planning video {video.id}: duration={video.duration_seconds:.2f}s, "
@@ -336,7 +405,15 @@ async def plan_video_async(
                     "duration_seconds": video.duration_seconds,
                     "source_frame_rate": video.source_frame_rate,
                 },
+                commit=False,
             )
+
+            queued_count = 0
+            for chunk_id in created_chunk_ids:
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+                if await enqueue_transcode_job(db, chunk_id):
+                    queued_count += 1
 
             # 8. Commit changes atomically to Supabase
             await db.commit()
@@ -359,40 +436,11 @@ async def plan_video_async(
                 },
             )
 
-            # 9. Publish created chunk transcode jobs to Kafka topic transcode.jobs, Planning completed here.
-            try:
-                if await is_video_cancellation_requested(video.id, cancel_event):
-                    logger.info(
-                        "Skipping transcode job publication for cancelled video %s",
-                        video.id,
-                    )
-                    return True
-                worker_producer = get_worker_producer()
-                if worker_producer:
-                    published_count = 0
-                    for cid in created_chunk_ids:
-                        if await is_video_cancellation_requested(
-                            video.id, cancel_event
-                        ):
-                            logger.info(
-                                "Stopped publishing transcode jobs for cancelled video %s",
-                                video.id,
-                            )
-                            break
-                        await asyncio.to_thread(
-                            publish_chunk,
-                            producer=worker_producer,
-                            chunk_id=cid,
-                        )
-                        published_count += 1
-                    await asyncio.to_thread(worker_producer.flush)
-                    logger.info(
-                        f"Published {published_count} chunk transcode job(s) for video {video.id} to Kafka topic '{settings.KAFKA_WORKER_TOPIC}'."
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"Could not publish chunk transcode jobs to Kafka for video {video.id}: {e}"
-                )
+            logger.info(
+                "Queued %s chunk transcode job(s) transactionally for video %s",
+                queued_count,
+                video.id,
+            )
 
             return True
 
@@ -402,7 +450,7 @@ async def plan_video_async(
                 f"Error planning video {video_id}, transaction rolled back: {e}",
                 exc_info=True,
             )
-            return False
+            raise
 
 
 def plan_video(video_id: str) -> bool:

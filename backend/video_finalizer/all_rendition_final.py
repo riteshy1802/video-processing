@@ -8,8 +8,8 @@ from app.repositories.rendition_repository import rendition_repository
 from app.repositories.video_repository import video_repository
 from app.services.s3 import s3_service
 from app.services.redis_publisher import publish_event_async
-from app.services.cancellation_service import settle_video_cancellation
-
+from app.services.pipeline_settlement import settle_stopped_video
+from app.core.failure_handling import PermanentJobError
 
 def calculate_rendition_width(
     source_width: int,
@@ -83,17 +83,21 @@ async def finalize_video(
     print(f"FINALIZE VIDEO RECEIVED: {video_id}")
     try:
         video_uuid = uuid.UUID(video_id)
-    except ValueError:
-        logger.error(f"Invalid video UUID: {video_id}")
-        return False
+    except (ValueError, TypeError) as exc:
+        raise PermanentJobError(
+            f"Invalid video UUID: {video_id}"
+        ) from exc
+    # Claim in a short transaction and snapshot all playlist inputs. S3 work
+    # happens only after this session has returned its connection.
     async with AsyncSessionLocal() as db:
         video = await video_repository.get_by_id(db, video_id=video_uuid)
         if video is None:
-            logger.warning(f"Video {video_id} does not exist")
-            return False
+            raise PermanentJobError(
+                f"Video does not exist in database: video_id={video_id}"
+            )
 
-        if video.status in {"CANCELLING", "CANCELLED"}:
-            settlement = await settle_video_cancellation(db, video_uuid)
+        if video.status in {"CANCELLING", "CANCELLED", "FAILING", "FAILED"}:
+            settlement = await settle_stopped_video(db, video_uuid)
             if settlement.status != "PROCESSING":
                 logger.info(
                     "Skipping video finalization %s because cancellation is terminal/incomplete",
@@ -109,8 +113,9 @@ async def finalize_video(
         # Fetch all renditions :
         renditions = await rendition_repository.get_by_video_id(db, video_id=video_uuid)
         if not renditions:
-            logger.warning(f"No renditions found for video {video_id}")
-            return False
+            raise PermanentJobError(
+                f"No renditions found for video_id={video_id}"
+            )
 
         # as we have the renditions just use them to check their readiness (all should be READY status before we publish the video for the finalization):
 
@@ -124,34 +129,36 @@ async def finalize_video(
             return False
         logger.info(f"Video {video_id} successfully claimed for the finalization")
 
-        await publish_event_async(
-            video_id,
-            {
-                "type": "video.finalizing",
-                "video_id": video_id,
-                "status": "FINALIZING",
-            },
-        )
-
-        # master m3u8 generation:
+        # Build from the loaded snapshot while the claim is durable.
         master_playlist = generate_master_playlist(video=video, renditions=renditions)
         master_playlist_key = f"videos/{video.id}/processed/master.m3u8"
-        # boto3 is synchronous. Keep it off the asyncio loop so Redis cancel
-        # notifications and Kafka heartbeats are not starved.
-        await asyncio.to_thread(
-            s3_service.put_text_file,
-            s3_key=master_playlist_key,
-            content=master_playlist,
-        )
-        logger.info(f"Master playlist uploaded: {master_playlist_key}")
 
-        # Re-check under the video-row lock immediately before READY. If a
-        # cancellation raced here, completed renditions are allowed to finish;
-        # incomplete cancellation is never overwritten.
+    await publish_event_async(
+        video_id,
+        {
+            "type": "video.finalizing",
+            "video_id": video_id,
+            "status": "FINALIZING",
+        },
+    )
+
+    # boto3 is synchronous. Keep it off the asyncio loop and do not retain a
+    # DB session while the network upload is in progress.
+    await asyncio.to_thread(
+        s3_service.put_text_file,
+        s3_key=master_playlist_key,
+        content=master_playlist,
+    )
+    logger.info(f"Master playlist uploaded: {master_playlist_key}")
+
+    # Re-check under the video-row lock immediately before READY. If a
+    # cancellation raced here, completed renditions are allowed to finish;
+    # incomplete cancellation is never overwritten.
+    async with AsyncSessionLocal() as db:
         current_status = await video_repository.get_status_for_update(db, video_uuid)
-        if current_status in {"CANCELLING", "CANCELLED"}:
+        if current_status in {"CANCELLING", "CANCELLED", "FAILING", "FAILED"}:
             await db.rollback()
-            settlement = await settle_video_cancellation(db, video_uuid)
+            settlement = await settle_stopped_video(db, video_uuid)
             if settlement.status != "PROCESSING":
                 logger.info(
                     "Not marking video %s READY because cancellation is incomplete/terminal",
@@ -192,12 +199,12 @@ async def finalize_video(
         await db.commit()
         logger.info(f"Video {video_id} finalized successfully")
 
-        await publish_event_async(
-            video_id,
-            {
-                "type": "video.ready",
-                "video_id": video_id,
-                "status": "READY",
-            },
-        )
+    await publish_event_async(
+        video_id,
+        {
+            "type": "video.ready",
+            "video_id": video_id,
+            "status": "READY",
+        },
+    )
     return True

@@ -35,6 +35,7 @@ export function ProcessingState({
   const videoStatus = (processingState?.video_status || video.status || "").toUpperCase();
   const isCancelling = videoStatus === "CANCELLING";
   const isCancelled = videoStatus === "CANCELLED";
+  const isFailing = videoStatus === "FAILING";
 
   // Calculate live readiness & chunk counts
   const renditions = processingState?.renditions?.length
@@ -81,8 +82,8 @@ export function ProcessingState({
       {/* Real-time Processing Header Banner */}
       <div className={cn(
         "space-y-4 rounded-2xl border p-6 shadow-sm dark:shadow-lg",
-        isCancelling || isCancelled
-          ? isCancelled
+        isCancelling || isCancelled || isFailing
+          ? isCancelled || isFailing
             ? "border-rose-300 bg-rose-50 dark:border-rose-500/30 dark:bg-rose-950/20"
             : "border-slate-300 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/60"
           : "border-sky-200/80 bg-gradient-to-r from-sky-50 via-white to-emerald-50 dark:border-sky-500/20 dark:from-sky-950/40 dark:via-slate-900/60 dark:to-slate-950/40"
@@ -90,15 +91,17 @@ export function ProcessingState({
         <div className="flex flex-col justify-between gap-4 border-b border-slate-200/80 pb-4 sm:flex-row sm:items-center dark:border-slate-800/80">
           <div className="flex items-center gap-3">
             <div className="rounded-xl border border-sky-300 bg-sky-100 p-2.5 text-sky-600 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-400">
-              {isCancelled ? <XCircle className="h-5 w-5 text-rose-500" /> : <Activity className={cn("h-5 w-5", !isCancelling && "animate-pulse")} />}
+              {isCancelled || isFailing ? <XCircle className="h-5 w-5 text-rose-500" /> : <Activity className={cn("h-5 w-5", !isCancelling && "animate-pulse")} />}
             </div>
             <div>
-              <h2 className="flex items-center gap-2 font-mono text-base font-bold text-slate-900 dark:text-slate-100">
-                <span>{isCancelled ? "Video processing stopped" : isCancelling ? "Stopping video processing..." : "Distributed HLS Transcoding Pipeline"}</span>
+              <h2 className="flex items-center gap-2 font-sans text-base font-semibold text-slate-900 dark:text-slate-100">
+                <span>{isCancelled ? "Video processing stopped" : isFailing ? "Stopping after processing failure..." : isCancelling ? "Stopping video processing..." : "Distributed HLS Transcoding Pipeline"}</span>
               </h2>
               <p className="mt-0.5 font-sans text-xs text-slate-600 dark:text-slate-400">
                 {isCancelled
                   ? "Unfinished chunks and renditions were cancelled"
+                  : isFailing
+                    ? processingState?.error || "Active workers are stopping after a terminal failure"
                   : isCancelling
                     ? "Active workers are terminating their FFmpeg processes"
                     : "Real-time Kafka chunk partition progress via Redis Pub/Sub SSE"}
@@ -106,40 +109,42 @@ export function ProcessingState({
             </div>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0 flex-wrap">
-            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 font-mono text-xs font-medium shadow-xs dark:border-slate-800 dark:bg-slate-900/80">
-              <span className={cn("h-2 w-2 rounded-full shrink-0", isCompleted ? "bg-emerald-400" : isCancelled ? "bg-slate-400" : isConnected ? "bg-emerald-400 animate-ping" : "bg-amber-400")} />
+          <div className="flex items-center gap-2.5 shrink-0 flex-wrap font-sans text-xs">
+            <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-medium shadow-xs dark:border-slate-800 dark:bg-slate-900/80">
+              <span className={cn("h-2 w-2 rounded-full shrink-0", isCompleted ? "bg-emerald-500" : isCancelled || isFailing ? "bg-rose-500" : isConnected ? "bg-emerald-500 animate-ping" : "bg-amber-500")} />
               <span className={isCompleted || isConnected ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}>
-                {isCompleted ? "Pipeline Complete" : isCancelled ? "Processing Stopped" : isConnected ? "Live SSE Connected" : "Connecting SSE..."}
+                {isCompleted ? "Pipeline Complete" : isCancelled ? "Processing Stopped" : isFailing ? "Failure shutdown" : isConnected ? "Live SSE Connected" : "Connecting SSE..."}
               </span>
             </div>
 
             <div className={cn(
-              "rounded-xl border px-3 py-1.5 font-mono text-xs font-bold",
+              "rounded-lg border px-3 py-1.5 font-medium",
               isCancelled
                 ? "border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300"
-                : "border-sky-300 bg-sky-100 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300"
+                : "border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300"
             )}>
               {isCancelled ? "Processing Cancelled" : `${readyCount} / ${renditions.length} Renditions Ready`}
             </div>
 
-            <div className="rounded-xl border border-emerald-300 bg-emerald-100 px-3 py-1.5 font-mono text-xs font-bold text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
+            <div className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
               {isCancelled
-                ? `${completedChunks} / ${totalChunks} chunks completed • Cancelled`
+                ? `${completedChunks} / ${totalChunks} chunks completed`
+                : isFailing
+                  ? "Terminal failure · stopping workers"
                 : `Total Chunks: ${completedChunks} / ${totalChunks} (${Math.round(overallProgress)}%)`}
             </div>
           </div>
         </div>
 
         {/* Overall Progress Bar */}
-        {!isCancelled && <div className="space-y-1.5">
-          <div className="flex justify-between font-mono text-xs text-slate-600 dark:text-slate-400">
-            <span>Overall Chunks Transcoded Progress</span>
-            <span className="font-bold text-emerald-600 dark:text-emerald-400">{Math.round(overallProgress)}%</span>
+        {!isCancelled && !isFailing && <div className="space-y-1.5">
+          <div className="flex justify-between font-sans text-xs text-slate-600 dark:text-slate-400">
+            <span className="font-medium">Overall Chunks Transcoded Progress</span>
+            <span className="font-semibold text-emerald-600 dark:text-emerald-400 font-mono">{Math.round(overallProgress)}%</span>
           </div>
-          <div className="h-2.5 w-full overflow-hidden rounded-full border border-slate-300 bg-slate-200 p-0.5 dark:border-slate-700/50 dark:bg-slate-800/80">
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
             <div
-              className="h-full rounded-full bg-gradient-to-r from-sky-500 via-teal-400 to-emerald-400 transition-all duration-500 relative overflow-hidden"
+              className="h-full rounded-full bg-sky-500 dark:bg-sky-400 transition-all duration-500 relative overflow-hidden"
               style={{ width: `${Math.max(0, Math.min(100, overallProgress))}%` }}
             >
               {!isCompleted && !isCancelled && (

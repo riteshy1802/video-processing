@@ -220,5 +220,53 @@ class RenditionRepository:
         result = await db.execute(stmt)
         return result.rowcount
 
+    async def redrive_failed_finalization(
+        self,
+        db: AsyncSession,
+        rendition_id: uuid.UUID,
+        commit: bool = True,
+    ) -> bool:
+        """Restore only a failed rendition whose parent video is still active."""
+        video_status_stmt = (
+            select(Video.status)
+            .join(Rendition, Rendition.video_id == Video.id)
+            .where(Rendition.id == rendition_id)
+            .with_for_update(of=Video)
+        )
+        video_status = (await db.execute(video_status_stmt)).scalar_one_or_none()
+        if video_status != "PROCESSING":
+            await db.rollback()
+            return False
+
+        result = await db.execute(
+            update(Rendition)
+            .where(
+                Rendition.id == rendition_id,
+                Rendition.status == "FAILED",
+            )
+            .values(
+                status="PROCESSING",
+                playlist_s3_key=None,
+                completed_at=None,
+                processing_time_seconds=None,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        if result.rowcount == 1:
+            if commit:
+                await db.commit()
+            else:
+                await db.flush()
+            return True
+
+        current_status = (
+            await db.execute(
+                select(Rendition.status).where(Rendition.id == rendition_id)
+            )
+        ).scalar_one_or_none()
+        if current_status != "PROCESSING":
+            await db.rollback()
+        return current_status == "PROCESSING"
+
 
 rendition_repository = RenditionRepository()

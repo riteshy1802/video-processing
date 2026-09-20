@@ -36,21 +36,15 @@ def automatic_thumbnail_timestamp(duration_seconds: float) -> float:
 def build_thumbnail_url(
     video_id: uuid.UUID | str, thumbnail_version: int
 ) -> Optional[str]:
-    """Return a cache-busted CloudFront thumbnail URL when one is available."""
+    """Return a fresh thumbnail URL that cannot resolve to stale CDN content."""
     if thumbnail_version <= 0:
         return None
 
     s3_key = THUMBNAIL_S3_KEY.format(video_id=video_id)
-    domain = settings.CLOUDFRONT_DOMAIN
-    if domain and domain.strip():
-        clean_domain = domain.strip()
-        if not clean_domain.startswith(("http://", "https://")):
-            clean_domain = f"https://{clean_domain}"
-        return f"{clean_domain.rstrip('/')}/{s3_key}?v={thumbnail_version}"
-
-    # A fresh signed URL already changes whenever the API response is rebuilt,
-    # so adding an unsigned query value (which can invalidate the signature) is
-    # unnecessary for the local/non-CloudFront fallback.
+    # The current CloudFront cache policy does not include query strings in its
+    # cache key, so `?v=` still returns an older thumbnail.webp. A fresh signed
+    # S3 URL is unique and displays the durable object immediately. HLS/video
+    # delivery continues to use CloudFront independently.
     return s3_service.generate_presigned_get_url(
         s3_key=s3_key,
         expires_in=settings.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
@@ -331,11 +325,14 @@ class ThumbnailService:
         finally:
             await asyncio.to_thread(s3_service.delete_object, staging_key)
 
-        thumbnail_url = build_thumbnail_url(video_id, version)
-        if thumbnail_url is None:
-            raise HTTPException(status_code=500, detail="Thumbnail URL is unavailable.")
+        # Custom upload completion is response-driven. Return a fresh direct
+        # object URL so the playback page is not dependent on CloudFront's
+        # query-string cache policy to display the newly replaced object.
+        thumbnail_url = s3_service.generate_presigned_get_url(
+            s3_key=THUMBNAIL_S3_KEY.format(video_id=video_id),
+            expires_in=settings.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
+        )
 
-        await _publish_thumbnail_ready(video_id, version)
         return CompleteThumbnailUploadResponse(
             thumbnail_url=thumbnail_url,
             thumbnail_version=version,

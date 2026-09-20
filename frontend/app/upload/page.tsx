@@ -133,7 +133,7 @@ export default function UploadPage() {
         <div className="space-y-1">
           <div className="flex items-center gap-3">
             <Link
-              href="/"
+              href="/dashboard"
               className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900 transition-colors cursor-pointer flex items-center justify-center"
             >
               <ArrowLeft className="h-4 w-4" />

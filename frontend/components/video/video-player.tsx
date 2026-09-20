@@ -9,6 +9,7 @@ import {
   VolumeX, 
   Maximize, 
   Minimize,
+  PictureInPicture2,
   Settings, 
   AlertCircle,
   Film,
@@ -57,6 +58,7 @@ export function VideoPlayer({
   const [volume, setVolume] = useState(1);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isPictureInPicture, setIsPictureInPicture] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState<number>(initialDuration || 0);
 
@@ -77,6 +79,7 @@ export function VideoPlayer({
   const requestedSeekTimeRef = useRef<number | null>(null);
   const playbackEndedRef = useRef(false);
   const playWhenReadyRef = useRef(false);
+  const playbackIntentRef = useRef(false);
   const lastAudibleVolumeRef = useRef(1);
   const playbackRateRef = useRef(1);
   const [isLoadRequested, setIsLoadRequested] = useState(
@@ -253,6 +256,7 @@ export function VideoPlayer({
 
     const handlePlaying = () => {
       playbackEndedRef.current = false;
+      playbackIntentRef.current = true;
       video.defaultPlaybackRate = playbackRateRef.current;
       video.playbackRate = playbackRateRef.current;
       if (requestedSeekTimeRef.current === null && !video.seeking) {
@@ -276,6 +280,7 @@ export function VideoPlayer({
     const handleEnded = () => {
       stopTimelineUpdates();
       playbackEndedRef.current = true;
+      playbackIntentRef.current = false;
       const finalDuration = Number.isFinite(video.duration) && video.duration > 0
         ? video.duration
         : video.currentTime;
@@ -347,6 +352,33 @@ export function VideoPlayer({
     };
     document.addEventListener("fullscreenchange", handleFullscreenChange);
 
+    const resumeIntendedPlayback = () => {
+      if (!playbackIntentRef.current || video.ended) return;
+      if (hlsRef.current) {
+        hlsRef.current.startLoad(video.currentTime);
+      }
+      if (video.paused) {
+        void video.play().catch(() => {
+          // Some mobile/OS policies require another user gesture. Preserve the
+          // intent so a later visibility/focus event can try again.
+        });
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        if (!video.paused && !video.ended) playbackIntentRef.current = true;
+        // Keep HLS loading while timers and rendering are background-throttled.
+        hlsRef.current?.startLoad();
+        return;
+      }
+      resumeIntendedPlayback();
+    };
+
+    const handleWindowFocus = () => resumeIntendedPlayback();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleWindowFocus);
+
     // Network Online / Offline handlers
     const startRetryPolling = () => {
       if (retryTimerRef.current) clearInterval(retryTimerRef.current);
@@ -388,14 +420,18 @@ export function VideoPlayer({
       video.defaultPlaybackRate = playbackRateRef.current;
       video.playbackRate = playbackRateRef.current;
       if (autoPlay || playWhenReadyRef.current) {
+        playbackIntentRef.current = true;
         playWhenReadyRef.current = false;
         video.play().catch(() => setIsPlaying(false));
       }
     } else if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
-        maxBufferLength: 10,
-        maxMaxBufferLength: 20,
+        // A larger bounded buffer tolerates background-tab timer/network
+        // throttling without loading the entire asset into memory.
+        maxBufferLength: 60,
+        maxMaxBufferLength: 120,
+        backBufferLength: 30,
         manifestLoadingMaxRetry: Infinity,
         fragLoadingMaxRetry: Infinity,
         levelLoadingMaxRetry: Infinity,
@@ -434,6 +470,7 @@ export function VideoPlayer({
           applyQualityLock(hls, currentQualityRef.current, raw);
         }
         if (autoPlay || playWhenReadyRef.current) {
+          playbackIntentRef.current = true;
           playWhenReadyRef.current = false;
           video.play().catch(() => setIsPlaying(false));
         }
@@ -461,7 +498,7 @@ export function VideoPlayer({
 
       hls.on(Hls.Events.FRAG_LOADED, () => {
         stopRetryPolling();
-        if (wasPlayingRef.current && video.paused) {
+        if ((wasPlayingRef.current || playbackIntentRef.current) && video.paused) {
           video.play().catch(() => {});
         }
       });
@@ -497,6 +534,8 @@ export function VideoPlayer({
         video.removeEventListener("ended", handleEnded);
         window.removeEventListener("offline", handleOffline);
         window.removeEventListener("online", handleOnline);
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+        window.removeEventListener("focus", handleWindowFocus);
         document.removeEventListener("fullscreenchange", handleFullscreenChange);
       };
     }
@@ -516,9 +555,49 @@ export function VideoPlayer({
       video.removeEventListener("ended", handleEnded);
       window.removeEventListener("offline", handleOffline);
       window.removeEventListener("online", handleOnline);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleWindowFocus);
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
     };
   }, [src, autoPlay, isLoadRequested]);
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+
+    const play = () => {
+      const video = videoRef.current;
+      if (!video) return;
+      playbackIntentRef.current = true;
+      hlsRef.current?.startLoad(video.currentTime);
+      void video.play().catch(() => {
+        // Background playback may still require an OS/browser-approved gesture.
+      });
+    };
+    const pause = () => {
+      playbackIntentRef.current = false;
+      videoRef.current?.pause();
+    };
+
+    navigator.mediaSession.setActionHandler("play", play);
+    navigator.mediaSession.setActionHandler("pause", pause);
+    return () => {
+      navigator.mediaSession.setActionHandler("play", null);
+      navigator.mediaSession.setActionHandler("pause", null);
+    };
+  }, [src]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const entered = () => setIsPictureInPicture(true);
+    const left = () => setIsPictureInPicture(false);
+    video.addEventListener("enterpictureinpicture", entered);
+    video.addEventListener("leavepictureinpicture", left);
+    return () => {
+      video.removeEventListener("enterpictureinpicture", entered);
+      video.removeEventListener("leavepictureinpicture", left);
+    };
+  }, [isLoadRequested]);
 
   // Handle quality changes with instant level lock & immediate segment fetch
   useEffect(() => {
@@ -587,6 +666,7 @@ export function VideoPlayer({
     if (!video) return;
 
     if (!isLoadRequested) {
+      playbackIntentRef.current = true;
       playWhenReadyRef.current = true;
       setIsBuffering(true);
       setIsLoadRequested(true);
@@ -594,9 +674,11 @@ export function VideoPlayer({
     }
 
     if (isPlaying) {
+      playbackIntentRef.current = false;
       video.pause();
       setIsPlaying(false);
     } else {
+      playbackIntentRef.current = true;
       video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
     }
   };
@@ -616,6 +698,30 @@ export function VideoPlayer({
       video.muted = true;
     }
     setIsMuted(video.muted);
+  };
+
+  const togglePictureInPicture = async () => {
+    const video = videoRef.current;
+    if (
+      !video ||
+      !document.pictureInPictureEnabled ||
+      typeof video.requestPictureInPicture !== "function"
+    ) {
+      return;
+    }
+
+    try {
+      if (document.pictureInPictureElement === video) {
+        await document.exitPictureInPicture();
+        return;
+      }
+      playbackIntentRef.current = true;
+      hlsRef.current?.startLoad(video.currentTime);
+      if (video.paused) await video.play();
+      await video.requestPictureInPicture();
+    } catch (pictureInPictureError) {
+      console.warn("Picture-in-Picture could not be started", pictureInPictureError);
+    }
   };
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1058,6 +1164,20 @@ export function VideoPlayer({
                 </div>
               )}
             </div>
+
+            {/* Picture-in-Picture is the browser-supported background mode. */}
+            <button
+              type="button"
+              onClick={() => void togglePictureInPicture()}
+              className={cn(
+                "p-2 rounded-lg bg-slate-900/80 border border-slate-700/60 hover:bg-slate-800 text-slate-200 transition-colors cursor-pointer",
+                isPictureInPicture && "border-sky-400/70 text-sky-400"
+              )}
+              title={isPictureInPicture ? "Exit background mode" : "Background mode (Picture-in-Picture)"}
+              aria-label={isPictureInPicture ? "Exit background mode" : "Start background mode"}
+            >
+              <PictureInPicture2 className="h-4 w-4" />
+            </button>
 
             {/* Fullscreen Toggle Button */}
             <button

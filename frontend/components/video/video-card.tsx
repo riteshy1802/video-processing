@@ -19,7 +19,8 @@ interface VideoCardProps {
   onRenamed?: (videoId: string, filename: string) => void;
 }
 
-function splitFilename(filename: string): { name: string; extension: string } {
+function splitFilename(filename: string = ""): { name: string; extension: string } {
+  if (!filename) return { name: "Untitled", extension: "" };
   const lastDot = filename.lastIndexOf(".");
   if (lastDot <= 0) return { name: filename, extension: "" };
   return {
@@ -29,6 +30,8 @@ function splitFilename(filename: string): { name: string; extension: string } {
 }
 
 export function VideoCard({ video, onRenamed }: VideoCardProps) {
+  if (!video) return null;
+
   const [isEditing, setIsEditing] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -36,9 +39,9 @@ export function VideoCard({ video, onRenamed }: VideoCardProps) {
   const isReady = video.status === "ready";
   const statusLower = (video.status || "").toLowerCase();
   const isCancelled = statusLower === "cancelled" || statusLower === "canceled" || statusLower === "cancelling";
-  const canRename = !video.id.startsWith("vid_demo_");
+  const canRename = Boolean(video.id && !video.id.startsWith("vid_demo_"));
   const resolutionLabel = getResolutionLabel(video.width, video.height);
-  const { name: currentName, extension } = splitFilename(video.filename);
+  const { name: currentName, extension } = splitFilename(video.filename || "Untitled.mp4");
 
   const beginEditing = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -180,27 +183,27 @@ export function VideoCard({ video, onRenamed }: VideoCardProps) {
               </button>
             </form>
           ) : (
-            <h3 className="line-clamp-1 font-mono text-sm font-semibold text-slate-900 transition-colors group-hover:text-sky-600 dark:text-slate-100 dark:group-hover:text-sky-400" title={video.filename}>
+            <h3 className="line-clamp-1 font-sans text-sm font-semibold text-slate-900 transition-colors group-hover:text-sky-600 dark:text-slate-100 dark:group-hover:text-sky-400" title={video.filename}>
               {video.filename}
             </h3>
           )}
-          <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1">
-            ID: <span className="text-slate-700 dark:text-slate-300 font-medium">{video.id}</span>
+          <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1 truncate">
+            ID: <span className="text-slate-700 dark:text-slate-300 font-normal">{video.id}</span>
           </p>
         </div>
 
         {/* Card Footer */}
-        <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] font-mono text-slate-500 dark:text-slate-400">
+        <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] font-sans text-slate-500 dark:text-slate-400">
           <div className="flex items-center gap-1">
             <HardDrive className="h-3.5 w-3.5 text-slate-400" />
-            <span className="font-medium text-slate-700 dark:text-slate-300">{formatBytes(video.size)}</span>
+            <span className="font-medium text-slate-700 dark:text-slate-300 font-mono text-[11px]">{formatBytes(video.size)}</span>
           </div>
           <div className="flex items-center gap-1.5">
             {canRename && !isEditing && (
               <button
                 type="button"
                 onClick={beginEditing}
-                className="pointer-events-auto rounded p-1 text-slate-400 opacity-0 transition-all hover:bg-sky-500/10 hover:text-sky-500 focus:opacity-100 group-hover:opacity-100"
+                className="pointer-events-auto rounded p-1 text-slate-400 opacity-0 transition-all hover:bg-sky-500/10 hover:text-sky-500 focus:opacity-100 group-hover:opacity-100 cursor-pointer"
                 title="Rename video"
                 aria-label={`Rename ${video.filename}`}
               >

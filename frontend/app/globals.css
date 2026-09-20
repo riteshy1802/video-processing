@@ -64,8 +64,12 @@
   }
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 html, body {
-  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 /* Ensure Fumadocs sidebar content aligns flush to the left edge with zero offset */

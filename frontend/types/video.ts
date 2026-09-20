@@ -10,6 +10,8 @@ export type VideoStatus =
   | "PROCESSING"
   | "finalizing"
   | "FINALIZING"
+  | "failing"
+  | "FAILING"
   | "cancelling"
   | "CANCELLING"
   | "cancelled"
@@ -83,8 +85,9 @@ export interface ChunkProgressState {
   rendition_id: string;
   resolution: string;
   worker_id?: string;
-  status: "PENDING" | "PROCESSING" | "DONE" | "FAILED" | "CANCELLED";
+  status: "PENDING" | "RETRYING" | "PROCESSING" | "DONE" | "FAILED" | "CANCELLED";
   progress: number;
+  attempt?: number;
   start_seconds?: number;
   end_seconds?: number;
   error?: string;
@@ -109,6 +112,8 @@ export interface ProcessingSnapshot {
   total_chunks: number;
   completed_chunks: number;
   overall_progress: number;
+  error?: string;
+  message?: string;
   thumbnail_url?: string;
   thumbnail_version?: number;
   renditions: RenditionProgressState[];
@@ -128,4 +133,5 @@ export interface SSEEventData {
   message?: string;
   thumbnail_url?: string;
   thumbnail_version?: number;
+  attempt?: number;
 }

@@ -17,6 +17,7 @@ from app.schemas.video import (
 )
 from app.services.video_service import video_service
 from app.services.thumbnail_service import thumbnail_service
+from typing import Optional
 
 router = APIRouter(prefix="/api/videos", tags=["Videos"])
 
@@ -88,9 +89,10 @@ async def list_videos(
     response: Response,
     limit: int = Query(default=100, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    search: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> List[VideoResponse]:
-    videos = await video_service.list_videos(db, limit=limit + 1, offset=offset)
+    videos = await video_service.list_videos(db, limit=limit + 1, offset=offset, search=search)
     page = videos[:limit]
     response.headers["X-Has-More"] = str(len(videos) > limit).lower()
     response.headers["X-Next-Offset"] = str(offset + len(page))
@@ -154,7 +156,7 @@ async def complete_thumbnail_upload(
     "/{video_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete Video Asset",
-    description="Deletes the original S3 object and removes database records and linked cascades.",
+    description="Deletes every S3 object under the video's prefix and removes its video, rendition, chunk, event, and outbox records.",
 )
 async def delete_video(video_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     await video_service.delete_video(db, video_id)

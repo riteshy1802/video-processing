@@ -103,6 +103,8 @@ async def build_initial_state_snapshot(db: AsyncSession, video_id: uuid.UUID) ->
         "type": "initial.state",
         "video_id": str(video.id),
         "status": v_status,
+        "error": video.error_message,
+        "message": video.error_message,
         "filename": video.original_filename,
         "duration_seconds": video.duration_seconds,
         "source_height": video.source_height,

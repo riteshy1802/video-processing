@@ -33,8 +33,12 @@ def get_finalizer_producer() -> Optional[KafkaProducer]:
 def publish_finalizer_job(
     producer: KafkaProducer,
     rendition_id: str,
+    attempt: int = 1,
 ):
-    message = {"rendition_id": rendition_id}
+    message = {
+        "rendition_id": rendition_id,
+        "attempt": attempt
+    }
 
     future = producer.send(
         settings.KAFKA_FINALIZE_TOPIC,

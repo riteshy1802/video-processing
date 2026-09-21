@@ -88,6 +88,54 @@ export function VideoPlayer({
 
   const currentQuality = externalQuality !== undefined ? externalQuality : internalQuality;
 
+  // Auto-hide controls and center pause button after 2 seconds of mouse inactivity
+  const [showControls, setShowControls] = useState(true);
+  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const resetControlsTimeout = () => {
+    setShowControls(true);
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = null;
+    }
+    if (isPlaying && !showQualityMenu && !showPlaybackMenu) {
+      controlsTimeoutRef.current = setTimeout(() => {
+        setShowControls(false);
+      }, 2000);
+    }
+  };
+
+  const handleContainerMouseMove = () => {
+    resetControlsTimeout();
+  };
+
+  const handleContainerMouseLeave = () => {
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = null;
+    }
+    if (isPlaying && !showQualityMenu && !showPlaybackMenu) {
+      setShowControls(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isPlaying) {
+      setShowControls(true);
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current);
+        controlsTimeoutRef.current = null;
+      }
+    } else {
+      resetControlsTimeout();
+    }
+    return () => {
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current);
+      }
+    };
+  }, [isPlaying, showQualityMenu, showPlaybackMenu]);
+
   // Click outside or Escape key to close quality dropdown menu
   useEffect(() => {
     const handleClickOutside = (event: Event) => {
@@ -907,8 +955,11 @@ export function VideoPlayer({
   return (
     <div
       ref={containerRef}
+      onMouseMove={handleContainerMouseMove}
+      onMouseLeave={handleContainerMouseLeave}
       className={cn(
-        "relative group aspect-video bg-slate-950 rounded-2xl border border-slate-300 dark:border-slate-800 overflow-hidden shadow-md flex items-center justify-center pointer-events-auto",
+        "relative group aspect-video bg-slate-950 rounded-2xl border border-slate-300 dark:border-slate-800 overflow-hidden shadow-md flex items-center justify-center pointer-events-auto transition-all",
+        isPlaying && !showControls && "cursor-none",
         isFullscreen && "w-screen h-screen rounded-none border-none fixed inset-0 z-50",
         className
       )}
@@ -928,10 +979,12 @@ export function VideoPlayer({
       <button
         onClick={togglePlay}
         className={cn(
-          "absolute z-20 w-16 h-16 md:w-20 md:h-20 rounded-full bg-slate-900/80 border border-slate-700/80 backdrop-blur-md flex items-center justify-center text-white shadow-2xl transition-all duration-200 hover:scale-110 hover:bg-sky-600/90 hover:border-sky-400 cursor-pointer pointer-events-auto",
+          "absolute z-20 w-16 h-16 md:w-20 md:h-20 rounded-full bg-slate-900/80 border border-slate-700/80 backdrop-blur-md flex items-center justify-center text-white shadow-2xl transition-all duration-300 hover:scale-110 hover:bg-sky-600/90 hover:border-sky-400 cursor-pointer pointer-events-auto",
           !isPlaying
             ? "opacity-100 scale-100"
-            : "opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100"
+            : showControls
+              ? "opacity-100 scale-100"
+              : "opacity-0 scale-90 pointer-events-none"
         )}
         aria-label={isPlaying ? "Pause Video" : "Play Video"}
       >
@@ -964,7 +1017,14 @@ export function VideoPlayer({
       )}
 
       {/* Controls Bar Overlay */}
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/95 via-slate-950/75 to-transparent p-4 md:p-6 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col gap-3 z-30 pointer-events-auto">
+      <div
+        className={cn(
+          "absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/95 via-slate-950/75 to-transparent p-4 md:p-6 transition-opacity duration-300 flex flex-col gap-3 z-30 pointer-events-auto",
+          showControls || !isPlaying || showQualityMenu || showPlaybackMenu
+            ? "opacity-100"
+            : "opacity-0 pointer-events-none"
+        )}
+      >
         
         {/* Scrubber Container with Permanently Mounted Frame Preview Tooltip */}
         <div

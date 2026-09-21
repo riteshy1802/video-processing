@@ -1,0 +1,20 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: rendition-finalizer-scaler
+
+spec:
+  scaleTargetRef:
+    name: rendition-finalizer
+
+  minReplicaCount: 1
+  maxReplicaCount: 3
+
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka.default.svc.cluster.local:9092
+        consumerGroup: video-rendition-finalizers
+        topic: finalize.jobs
+        lagThreshold: "1"
+        offsetResetPolicy: earliest

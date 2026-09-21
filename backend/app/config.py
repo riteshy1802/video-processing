@@ -146,7 +146,7 @@ class Settings(BaseSettings):
         default=600, description="Minimum duration of video to enable chunking"
     )
     CHUNK_DURATION_SECONDS: int = Field(
-        default=300, description="The duration width of a chunk generated"
+        default=120, description="The duration width of a chunk generated"
     )
     TRANSCODE_LEASE_DURATION_SECONDS: int = Field(
         default=120,

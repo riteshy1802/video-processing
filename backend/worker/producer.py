@@ -1,25 +1,21 @@
 # We have chunks which we will be scheduling in "transcode.jobs" [TOPIC] :
 
-import json
 import logging
 from typing import Optional
-from kafka import KafkaProducer
+from confluent_kafka import Producer
 from app.config import settings
+from app.core.kafka import create_json_producer, flush_producer, produce_json
 
 logger = logging.getLogger("worker_producer")
 
-_producer_instance: Optional[KafkaProducer] = None
+_producer_instance: Optional[Producer] = None
 
 
-def create_worker_producer() -> KafkaProducer:
-    return KafkaProducer(
-        bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
-        value_serializer=lambda value: json.dumps(value).encode("utf-8"),
-        request_timeout_ms=5000,
-    )
+def create_worker_producer() -> Producer:
+    return create_json_producer()
 
 
-def get_worker_producer() -> Optional[KafkaProducer]:
+def get_worker_producer() -> Optional[Producer]:
     global _producer_instance
     if _producer_instance is None:
         try:
@@ -32,15 +28,23 @@ def get_worker_producer() -> Optional[KafkaProducer]:
     return _producer_instance
 
 
-def publish_chunk(producer: KafkaProducer, chunk_id: str, attempt: int = 1):
+def close_worker_producer() -> None:
+    global _producer_instance
+    if _producer_instance is not None:
+        flush_producer(_producer_instance)
+        _producer_instance = None
+
+
+def publish_chunk(producer: Producer, chunk_id: str, attempt: int = 1):
     message = {
         "chunk_id": str(chunk_id),
         "attempt": attempt
     }
-    future = producer.send(
+    future = produce_json(
+        producer,
         settings.KAFKA_WORKER_TOPIC,
-        key=str(chunk_id).encode("utf-8"),
-        value=message,
+        message,
+        key=str(chunk_id),
     )
     return future
 
@@ -50,7 +54,7 @@ def publish_chunk(producer: KafkaProducer, chunk_id: str, attempt: int = 1):
 
 def publish_finalize_jobs_for_each_rendition(
     rendition_id: str,
-    producer: Optional[KafkaProducer] = None,
+    producer: Optional[Producer] = None,
 ):
     """
     Used to finalize all the chunks group them together under one rendition
@@ -65,10 +69,11 @@ def publish_finalize_jobs_for_each_rendition(
         return None
 
     message = {"rendition_id": str(rendition_id)}
-    future = producer.send(
+    future = produce_json(
+        producer,
         settings.KAFKA_FINALIZE_TOPIC,
-        key=str(rendition_id).encode("utf-8"),
-        value=message,
+        message,
+        key=str(rendition_id),
     )
 
     metadata = future.get(timeout=10)

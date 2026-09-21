@@ -167,7 +167,7 @@ export function VideoPlayer({
     if (cleanVal === "auto") {
       console.log("🎬 [HLS Player] Quality selection -> Auto Quality (ABR Mode Enabled)");
       hls.autoLevelCapping = -1;
-      hls.nextLevel = -1;
+      hls.currentLevel = -1;
       return;
     }
 
@@ -200,13 +200,14 @@ export function VideoPlayer({
         `🔒 [HLS Player] Quality Hard-Locked -> Target: ${cleanVal}p | Level Index: ${matchedIndex} | Height: ${selectedLvl?.height || targetHeight}p | Bitrate: ${selectedLvl?.bitrate ? Math.round(selectedLvl.bitrate / 1000) + ' kbps' : 'N/A'}`
       );
 
-      // `nextLevel` keeps the current fragment/buffer playable, then switches
-      // to this manually selected rendition at the next safe fragment boundary.
-      // It also sets hls.js's manual level, so ABR cannot override the choice.
+      // `currentLevel` triggers immediate level switch:
+      // It keeps the currently playing fragment intact, aborts in-flight loading of old level,
+      // flushes forward buffered segments outside current playing fragment, and fetches the 
+      // newly selected rendition immediately.
       hls.autoLevelCapping = -1;
-      hls.nextLevel = matchedIndex;
+      hls.currentLevel = matchedIndex;
       console.log(
-        `[HLS main] Manual quality locked to ${hls.manualLevel} (${selectedLvl?.height ?? targetHeight}p)`
+        `[HLS main] Manual quality locked immediately to level ${hls.manualLevel} (${selectedLvl?.height ?? targetHeight}p)`
       );
     } else {
       console.warn(`⚠️ [HLS Player] Could not match target resolution ${cleanVal}p in available levels:`, searchLevels);

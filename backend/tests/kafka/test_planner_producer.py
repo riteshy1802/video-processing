@@ -1,6 +1,7 @@
 import sys
 import uuid
 from planner.producer import create_planner_producer, publish_planning_job
+from app.core.kafka import flush_producer
 
 
 def produce_planner_jobs(video_ids: list[str]):
@@ -20,8 +21,7 @@ def produce_planner_jobs(video_ids: list[str]):
             f"offset={metadata.offset}"
         )
 
-    producer.flush()
-    producer.close()
+    flush_producer(producer)
     print(f"\nFinished producing {len(video_ids)} planner job(s).")
 
 

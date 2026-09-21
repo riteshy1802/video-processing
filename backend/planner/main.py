@@ -12,7 +12,11 @@ from app.core.failure_handling import (
 )
 from app.core.dead_letter import build_dead_letter_message, publish_dead_letter
 from app.config import settings
-from planner.producer import get_planner_producer, publish_planning_job
+from planner.producer import (
+    close_planner_producer,
+    get_planner_producer,
+    publish_planning_job,
+)
 from app.core.shutdown import install_shutdown_handlers, wait_for_shutdown
 from app.services.failure_service import propagate_video_failure
 
@@ -160,7 +164,10 @@ async def main_async():
             await cancellation_listener_task
         except asyncio.CancelledError:
             pass
-        await asyncio.to_thread(consumer.close)
+        try:
+            await asyncio.to_thread(consumer.close)
+        finally:
+            await asyncio.to_thread(close_planner_producer)
 
 
 def main():

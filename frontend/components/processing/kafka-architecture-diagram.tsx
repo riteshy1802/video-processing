@@ -234,7 +234,7 @@ export function KafkaArchitectureDiagram({
           <span className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">{video.filename}</span>
         </div>
 
-        <ArrowDown strokeWidth={2} className="h-4 w-4 text-slate-400 dark:text-slate-600" />
+        <ArrowDown strokeWidth={2} className="h-5 w-5 text-slate-400 dark:text-slate-600" />
       </div>
 
       {/* Stage 2: Job Planner Phase */}
@@ -257,7 +257,7 @@ export function KafkaArchitectureDiagram({
           </span>
         </div>
 
-        <ArrowDown strokeWidth={2} className="h-4 w-4 text-slate-400 dark:text-slate-600" />
+        <ArrowDown strokeWidth={2} className="h-5 w-5 text-slate-400 dark:text-slate-600" />
       </div>
 
       {/* Stage 3: Kafka Transcoding Queue */}
@@ -293,7 +293,7 @@ export function KafkaArchitectureDiagram({
           </span>
         </div>
 
-        <ArrowDown strokeWidth={2} className="h-4 w-4 text-slate-400 dark:text-slate-600" />
+        <ArrowDown strokeWidth={2} className="h-5 w-5 text-slate-400 dark:text-slate-600" />
       </div>
 
       {/* Stage 4: Parallel Worker Consumers Grid (360p, 480p, 720p, 1080p, 1440p) */}
@@ -497,7 +497,7 @@ export function KafkaArchitectureDiagram({
       </div>
 
       <div className="flex flex-col items-center text-center">
-        <ArrowDown strokeWidth={2} className="h-4 w-4 text-slate-400 dark:text-slate-600 my-0.5" />
+        <ArrowDown strokeWidth={2} className="h-5 w-5 text-slate-400 dark:text-slate-600 my-0.5" />
       </div>
 
       {/* Stage 5: Finalizing Video Step */}

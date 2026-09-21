@@ -1,6 +1,7 @@
 import sys
 import uuid
 from worker.producer import create_worker_producer, publish_chunk
+from app.core.kafka import flush_producer
 
 
 def produce_worker_jobs(chunk_ids: list[str]):
@@ -20,8 +21,7 @@ def produce_worker_jobs(chunk_ids: list[str]):
             f"offset={metadata.offset}"
         )
 
-    worker_producer.flush()
-    worker_producer.close()
+    flush_producer(worker_producer)
     print(f"\nFinished producing {len(chunk_ids)} worker transcode job(s).")
 
 

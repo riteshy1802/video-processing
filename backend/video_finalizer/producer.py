@@ -1,23 +1,19 @@
-import json
 import logging
-from kafka import KafkaProducer
+from confluent_kafka import Producer
 from typing import Optional
 from app.config import settings
+from app.core.kafka import create_json_producer, flush_producer, produce_json
 
 logger = logging.getLogger("video_finalizer")
 
-_producer_instance: Optional[KafkaProducer] = None
+_producer_instance: Optional[Producer] = None
 
 
-def create_finalizer_video_producer() -> KafkaProducer:
-    return KafkaProducer(
-        bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
-        value_serializer=lambda value: json.dumps(value).encode("utf-8"),
-        request_timeout_ms=5000,
-    )
+def create_finalizer_video_producer() -> Producer:
+    return create_json_producer()
 
 
-def get_video_finalizer_producer() -> Optional[KafkaProducer]:
+def get_video_finalizer_producer() -> Optional[Producer]:
     global _producer_instance
     if _producer_instance is None:
         try:
@@ -30,8 +26,15 @@ def get_video_finalizer_producer() -> Optional[KafkaProducer]:
     return _producer_instance
 
 
+def close_video_finalizer_producer() -> None:
+    global _producer_instance
+    if _producer_instance is not None:
+        flush_producer(_producer_instance)
+        _producer_instance = None
+
+
 def publish_video_finalizer_job(
-    producer: KafkaProducer,
+    producer: Producer,
     video_id: str,
     attempt: int = 1
 ):
@@ -40,8 +43,5 @@ def publish_video_finalizer_job(
         "attempt": attempt
     }
 
-    future = producer.send(
-        settings.KAFKA_FINALIZE_VIDEO_TOPIC,
-        value=message,
-    )
+    future = produce_json(producer, settings.KAFKA_FINALIZE_VIDEO_TOPIC, message)
     return future

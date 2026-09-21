@@ -3,7 +3,6 @@ kind: Deployment
 metadata:
   name: transcode-worker
 spec:
-  replicas: 3
 
   selector:
     matchLabels:
@@ -36,7 +35,7 @@ spec:
 
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
-              value: "kafka:29092"
+              value: "kafka:9092"
 
             - name: REDIS_URL
               value: "redis://redis:6379/0"

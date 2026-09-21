@@ -15,6 +15,7 @@ from app.core.failure_handling import (
 from app.core.dead_letter import build_dead_letter_message, publish_dead_letter
 from app.config import settings
 from finalizer.producer import (
+    close_finalizer_producer,
     get_finalizer_producer,
     publish_finalizer_job,
 )
@@ -182,7 +183,10 @@ async def main_async():
             await cancellation_listener_task
         except asyncio.CancelledError:
             pass
-        await asyncio.to_thread(consumer.close)
+        try:
+            await asyncio.to_thread(consumer.close)
+        finally:
+            await asyncio.to_thread(close_finalizer_producer)
 
 
 def main():

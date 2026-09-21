@@ -1,41 +1,38 @@
 import asyncio
-import json
 import logging
 
-from kafka import KafkaProducer
+from confluent_kafka import Producer
 
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.repositories.outbox_repository import outbox_repository
 from app.core.shutdown import install_shutdown_handlers, wait_for_shutdown
+from app.core.kafka import create_json_producer, flush_producer, produce_json
 
 logger = logging.getLogger("outbox_dispatcher")
 
 
-def create_outbox_producer() -> KafkaProducer:
-    return KafkaProducer(
-        bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
-        value_serializer=lambda value: json.dumps(value).encode("utf-8"),
-        request_timeout_ms=5000,
-    )
+def create_outbox_producer() -> Producer:
+    return create_json_producer()
 
 
-def publish_and_flush(producer: KafkaProducer, topic: str, payload: dict) -> None:
+def publish_and_flush(producer: Producer, topic: str, payload: dict) -> None:
     entity_key = (
         payload.get("chunk_id")
         or payload.get("rendition_id")
         or payload.get("video_id")
     )
-    future = producer.send(
+    future = produce_json(
+        producer,
         topic,
-        key=str(entity_key).encode("utf-8") if entity_key else None,
-        value=payload,
+        payload,
+        key=str(entity_key) if entity_key else None,
     )
     future.get(timeout=10)
-    producer.flush()
+    flush_producer(producer)
 
 
-async def dispatch_one(producer: KafkaProducer) -> bool:
+async def dispatch_one(producer: Producer) -> bool:
     """Publish one event without holding a DB connection during Kafka I/O."""
     async with AsyncSessionLocal() as db:
         event = await outbox_repository.get_next_unpublished(db)
@@ -88,4 +85,4 @@ async def run_dispatcher() -> None:
                     settings.OUTBOX_POLL_INTERVAL_SECONDS,
                 )
     finally:
-        producer.close()
+        flush_producer(producer)

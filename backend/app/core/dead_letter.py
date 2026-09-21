@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from kafka import KafkaProducer
+from confluent_kafka import Producer
 
 from app.core.failure_handling import FailureType
+from app.core.kafka import flush_producer, produce_json
 
 
 def build_dead_letter_message(
@@ -31,12 +32,11 @@ def build_dead_letter_message(
 
 def publish_dead_letter(
     *,
-    producer: KafkaProducer,
+    producer: Producer,
     dlq_topic: str,
     message: dict[str, Any],
 ) -> None:
     """Publish and confirm a DLQ record before its source offset is committed."""
-    future = producer.send(dlq_topic, value=message)
-    producer.flush()
-    # flush waits for completion, while get also surfaces delivery failures.
+    future = produce_json(producer, dlq_topic, message)
     future.get(timeout=10)
+    flush_producer(producer)

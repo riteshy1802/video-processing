@@ -1,6 +1,7 @@
 import sys
 import uuid
 from finalizer.producer import create_finalizer_producer, publish_finalizer_job
+from app.core.kafka import flush_producer
 
 
 def produce_finalizer_jobs(rendition_ids: list[str]):
@@ -20,8 +21,7 @@ def produce_finalizer_jobs(rendition_ids: list[str]):
             f"offset={metadata.offset}"
         )
 
-    producer.flush()
-    producer.close()
+    flush_producer(producer)
     print(f"\nFinished producing {len(rendition_ids)} finalizer job(s).")
 
 

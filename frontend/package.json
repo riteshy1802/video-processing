@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "fumadocs-mdx && next dev",
     "build": "fumadocs-mdx && next build",
     "postinstall": "fumadocs-mdx",
     "start": "next start",

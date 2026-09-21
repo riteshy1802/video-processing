@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transcode-worker
+spec:
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: transcode-worker
+
+  template:
+    metadata:
+      labels:
+        app: transcode-worker
+
+    spec:
+      containers:
+        - name: worker
+          image: video-processing-backend:local
+          imagePullPolicy: Never
+
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+
+          command: ["python", "-m", "worker.main"]
+
+          envFrom:
+            - secretRef:
+                name: video-processing-env
+
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:29092"
+
+            - name: REDIS_URL
+              value: "redis://redis:6379/0"

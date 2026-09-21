@@ -18,6 +18,7 @@ import {
   Ban,
   ServerOff,
   XCircle,
+  Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -48,6 +49,8 @@ export function RenditionDetails({
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 font-sans">
             {isRenditionCancelled
               ? `${rendition?.completed_chunks ?? 0}/${rendition?.total_chunks ?? 0} completed • Cancelled`
+              : Math.round(rendition?.progress ?? 0) === 99 || ((rendition?.progress ?? 0) >= 99 && (rendition?.progress ?? 0) < 100 && rendition?.status !== "READY")
+              ? `Uploading to S3 · ${rendition?.completed_chunks ?? 0}/${rendition?.total_chunks ?? 0} complete`
               : `Overall ${rendition?.progress ?? 0}% · ${rendition?.completed_chunks ?? 0}/${rendition?.total_chunks ?? 0} complete`}
           </p>
         </div>
@@ -63,7 +66,7 @@ export function RenditionDetails({
 
       {!isRenditionCancelled && <div className="my-3 h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
         <div
-          className="h-full rounded-full bg-sky-500 dark:bg-sky-400 transition-[width] duration-300"
+          className={cn("h-full rounded-full transition-[width] duration-300", (rendition?.progress ?? 0) >= 99 || rendition?.status === "READY" ? "bg-emerald-500 dark:bg-emerald-400" : "bg-sky-500 dark:bg-sky-400")}
           style={{ width: `${rendition?.progress ?? 0}%` }}
         />
       </div>}
@@ -74,6 +77,7 @@ export function RenditionDetails({
           const isProcessing = chunk.status === "PROCESSING";
           const isRetrying = chunk.status === "RETRYING";
           const isCancelled = chunk.status === "CANCELLED";
+          const isChunkUploadingToS3 = !isDone && !isCancelled && (chunk.progress >= 99 && chunk.progress < 100);
           const isExpanded = expandedChunkId === chunk.chunk_id;
           const retryLabel = chunk.message || "Scheduled for retry";
 
@@ -83,10 +87,11 @@ export function RenditionDetails({
               className={cn(
                 "overflow-hidden rounded-lg border transition-colors",
                 isDone && "border-emerald-200 bg-emerald-50/60 dark:border-emerald-500/20 dark:bg-emerald-950/20",
-                isProcessing && "border-sky-200 bg-sky-50/60 dark:border-sky-500/30 dark:bg-sky-950/30",
+                isChunkUploadingToS3 && "border-emerald-300 bg-emerald-50/70 dark:border-emerald-500/30 dark:bg-emerald-950/30",
+                isProcessing && !isChunkUploadingToS3 && "border-sky-200 bg-sky-50/60 dark:border-sky-500/30 dark:bg-sky-950/30",
                 isRetrying && "border-amber-200 bg-amber-50/60 dark:border-amber-500/30 dark:bg-amber-950/20",
                 isCancelled && "border-rose-200 bg-rose-50/60 dark:border-rose-500/20 dark:bg-rose-950/20",
-                !isDone && !isProcessing && !isRetrying && !isCancelled && "border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-900/60"
+                !isDone && !isProcessing && !isRetrying && !isCancelled && !isChunkUploadingToS3 && "border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-900/60"
               )}
             >
               <button
@@ -104,6 +109,8 @@ export function RenditionDetails({
                   <span className="flex items-center gap-1 text-[11px] text-slate-600 dark:text-slate-300 font-sans">
                     {isRetrying
                       ? `${retryLabel.startsWith("Recovering") ? "Recovering" : "Retrying"}${chunk.attempt ? ` · Attempt ${chunk.attempt}` : ""}`
+                      : isChunkUploadingToS3
+                      ? <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold"><Database className="h-3 w-3 text-emerald-500 animate-pulse" /> Uploading to S3</span>
                       : `${chunk.progress}% · ${chunk.status}`}
                     <ChevronRight className={cn("h-3.5 w-3.5 transition-transform text-slate-400", isExpanded && "rotate-90")} />
                   </span>
@@ -379,9 +386,18 @@ export function KafkaArchitectureDiagram({
               rawProgress = liveRendition?.progress ?? 0;
             }
             const progress = Math.min(100, Math.max(0, rawProgress));
-            const progressLabel = progress > 0 && progress < 1
+            const roundedProgress = Math.round(progress);
+
+            // Detect 99% Uploading to S3 vs 100% Ready state
+            const isUploadingToS3 = !isRenditionDone && !isRenditionCancelled && !isRenditionCancelling && (roundedProgress === 99 || (progress >= 99 && progress < 100));
+
+            const progressLabel = isUploadingToS3
+              ? "Uploading to S3"
+              : isRenditionDone || roundedProgress >= 100
+              ? "100"
+              : progress > 0 && progress < 1
               ? progress.toFixed(1)
-              : Math.round(progress).toString();
+              : roundedProgress.toString();
 
             const isSelected = selectedRenditionRes === resKey;
             const isReady = derivedStatusLabel === "ready";
@@ -400,7 +416,7 @@ export function KafkaArchitectureDiagram({
                 className={cn(
                   "p-3.5 rounded-xl border transition-all font-sans text-xs flex flex-col justify-between space-y-2.5 relative overflow-hidden cursor-pointer hover:border-slate-400 dark:hover:border-slate-700 group",
                   isSelected && "ring-2 ring-sky-500 border-sky-500 shadow-sky-500/10",
-                  isProcessing && !isSelected && "bg-sky-50/50 border-sky-300 dark:bg-slate-900/80 dark:border-sky-500/40",
+                  (isProcessing || isUploadingToS3) && !isReady && !isSelected && "bg-sky-50/50 border-sky-300 dark:bg-slate-900/80 dark:border-sky-500/40",
                   isReady && !isSelected && "bg-emerald-50/40 border-emerald-200 dark:bg-emerald-950/20 dark:border-emerald-500/30",
                   isTerminalCancelled && !isSelected && "bg-rose-50/40 border-rose-200 dark:bg-rose-950/20 dark:border-rose-500/30",
                   derivedStatusLabel === "cancelling" && !isSelected && "bg-slate-100 border-slate-200 dark:bg-slate-900/80 dark:border-slate-800",
@@ -439,12 +455,25 @@ export function KafkaArchitectureDiagram({
                 </div>
 
                 <div className="pt-0.5 relative z-10 flex items-center justify-start">
-                  <WorkerNodeBadge status={derivedStatusLabel} workerDisplay={workerDisplayName} className="max-w-full" />
+                  <WorkerNodeBadge
+                    status={derivedStatusLabel}
+                    workerDisplay={workerDisplayName}
+                    className="max-w-full"
+                  />
                 </div>
 
                 <div className="relative z-10 space-y-1.5">
                   <div className="flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-400">
-                    <span className="font-medium">{isTerminalCancelled ? "Cancelled" : `${progressLabel}%`}</span>
+                    {isTerminalCancelled ? (
+                      <span className="font-medium text-rose-600 dark:text-rose-400">Cancelled</span>
+                    ) : isUploadingToS3 ? (
+                      <span className="flex items-center gap-1 font-semibold text-emerald-600 dark:text-emerald-400">
+                        <Database className="h-3 w-3 text-emerald-500 dark:text-emerald-400 animate-pulse shrink-0" />
+                        <span>Uploading to S3...</span>
+                      </span>
+                    ) : (
+                      <span className="font-medium">{progressLabel}%</span>
+                    )}
                     <span className="font-mono text-[10px] text-slate-500">{displayCompletedChunks}/{totalChunks} chunks</span>
                   </div>
                   {!isTerminalCancelled && <div

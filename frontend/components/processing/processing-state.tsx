@@ -131,7 +131,9 @@ export function ProcessingState({
                 ? `${completedChunks} / ${totalChunks} chunks completed`
                 : isFailing
                   ? "Terminal failure · stopping workers"
-                : `Total Chunks: ${completedChunks} / ${totalChunks} (${Math.round(overallProgress)}%)`}
+                : Math.round(overallProgress) === 99 && !isCompleted
+                  ? `Total Chunks: ${completedChunks} / ${totalChunks} (Uploading to S3)`
+                  : `Total Chunks: ${completedChunks} / ${totalChunks} (${Math.round(overallProgress)}%)`}
             </div>
           </div>
         </div>
@@ -140,11 +142,16 @@ export function ProcessingState({
         {!isCancelled && !isFailing && <div className="space-y-1.5">
           <div className="flex justify-between font-sans text-xs text-slate-600 dark:text-slate-400">
             <span className="font-medium">Overall Chunks Transcoded Progress</span>
-            <span className="font-semibold text-emerald-600 dark:text-emerald-400 font-mono">{Math.round(overallProgress)}%</span>
+            <span className="font-semibold text-emerald-600 dark:text-emerald-400 font-mono">
+              {Math.round(overallProgress) === 99 && !isCompleted ? "Uploading to S3..." : `${Math.round(overallProgress)}%`}
+            </span>
           </div>
           <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
             <div
-              className="h-full rounded-full bg-sky-500 dark:bg-sky-400 transition-all duration-500 relative overflow-hidden"
+              className={cn(
+                "h-full rounded-full transition-all duration-500 relative overflow-hidden",
+                isCompleted ? "bg-emerald-500 dark:bg-emerald-400" : "bg-sky-500 dark:bg-sky-400"
+              )}
               style={{ width: `${Math.max(0, Math.min(100, overallProgress))}%` }}
             >
               {!isCompleted && !isCancelled && (

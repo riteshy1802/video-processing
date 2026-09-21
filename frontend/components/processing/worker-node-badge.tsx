@@ -1,6 +1,6 @@
 import React from "react";
 import { RenditionStatus } from "@/types/video";
-import { Cpu, Clock, CheckCircle2, AlertCircle, Ban, XCircle } from "lucide-react";
+import { Cpu, Clock, CheckCircle2, AlertCircle, Ban, XCircle, Database } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface WorkerNodeBadgeProps {
@@ -71,6 +71,15 @@ export function WorkerNodeBadge({ status, workerId, workerDisplay, className }: 
       <div className={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono font-medium bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30", className)}>
         <XCircle className="h-3 w-3 shrink-0" />
         <span>Cancelled</span>
+      </div>
+    );
+  }
+
+  if (statusLower === "uploading_s3" || statusLower === "uploading to s3" || displayLabel === "Uploading to S3") {
+    return (
+      <div className={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono font-medium bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30 shadow-xs", className)}>
+        <Database className="h-3 w-3 shrink-0 text-emerald-500 dark:text-emerald-400 animate-pulse" />
+        <span>Uploading to S3</span>
       </div>
     );
   }

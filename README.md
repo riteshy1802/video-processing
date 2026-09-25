@@ -246,9 +246,13 @@ kubectl port-forward svc/kafka-ui-service 8080:8080 -n video-pipeline
 ---
 
 ### A glimpse of the Product
+
 [Screencast from 2026-02-05 12-08-05.webm](https://github.com/user-attachments/assets/46de6a25-0d1e-4b7d-99a3-37934010e00a)
+
 [Screencast from 2026-09-26 01-14-04.webm](https://github.com/user-attachments/assets/c14a907b-e4f3-4f6e-b642-efe90979eee5)
+
 [Screencast from 2026-09-26 01-14-17.webm](https://github.com/user-attachments/assets/874fc5d7-40a2-46eb-89d0-91d9ad78f02b)
+
 [Screencast from 2026-09-26 01-19-11.webm](https://github.com/user-attachments/assets/f71e4749-58c6-4b12-96cf-4152e6de9f06)
 
 

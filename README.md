@@ -1,4 +1,4 @@
-# Transcode.io — Fault-Tolerant Distributed Video Transcoding Platform
+<img width="4076" height="2315" alt="Screenshot from 2026-09-25 22-46-19" src="https://github.com/user-attachments/assets/2de5be30-1e79-41a3-b3cd-bedbd32c7546" /># Transcode.io — Fault-Tolerant Distributed Video Transcoding Platform
 
 An enterprise-grade, event-driven video processing pipeline that ingests high-resolution video assets, dynamically splits them into parallel chunk jobs, and transcodes multi-bitrate HLS streams (360p to 1440p) across a fault-tolerant worker cluster using FFmpeg, Apache Kafka, FastAPI, Supabase (PostgreSQL), Redis, and Next.js 16.
 
@@ -247,14 +247,23 @@ kubectl port-forward svc/kafka-ui-service 8080:8080 -n video-pipeline
 
 ### A glimpse of the Product
 
-[Screencast from 2026-02-05 12-08-05.webm](https://github.com/user-attachments/assets/46de6a25-0d1e-4b7d-99a3-37934010e00a)
+[Screencast from 2026-09-25 23-55-41.webm](https://github.com/user-attachments/assets/4756a001-e971-4ea6-a4fb-6f19ddf44291)
 
-[Screencast from 2026-09-26 01-14-04.webm](https://github.com/user-attachments/assets/c14a907b-e4f3-4f6e-b642-efe90979eee5)
+[Screencast from 2026-09-25 23-45-59.webm](https://github.com/user-attachments/assets/4361fdd9-8d72-479d-94b2-385c7258d316)
 
-[Screencast from 2026-09-26 01-14-17.webm](https://github.com/user-attachments/assets/874fc5d7-40a2-46eb-89d0-91d9ad78f02b)
+[Screencast from 2026-09-25 23-20-20.webm](https://github.com/user-attachments/assets/2335f1d9-fe38-4825-bb31-b64dc766b193)
+
+[Screencast from 2026-09-25 23-15-13.webm](https://github.com/user-attachments/assets/6e9929ae-85a1-4f29-9d4c-d059412cc4bf)
 
 [Screencast from 2026-09-26 01-19-11.webm](https://github.com/user-attachments/assets/f71e4749-58c6-4b12-96cf-4152e6de9f06)
 
+### Some Screenshots
+
+<img width="4076" height="2315" alt="Screenshot from 2026-09-25 22-46-19" src="https://github.com/user-attachments/assets/7ae3b192-b298-43a1-8fce-4cef9e4d3832" />
+
+<img width="4093" height="2307" alt="image" src="https://github.com/user-attachments/assets/0d635bfa-d684-4d6c-8dca-45336df1b221" />
+
+### Find the Docs -> https://transcode-sage.vercel.app/docs
 
 ## Makefile Command Reference
 
@@ -280,38 +289,6 @@ kubectl port-forward svc/kafka-ui-service 8080:8080 -n video-pipeline
 | `make test` | Runs the Pytest backend test suite |
 | `make build` | Builds the Next.js frontend production bundle |
 | `make clean` | Cleans Python `__pycache__` and Next.js build caches |
-
----
-
-## Project Structure
-
-```
-video-processing/
-├── README.md                     # Root documentation
-├── Makefile                      # Platform orchestration commands
-├── start_platform.sh             # Multi-terminal cluster launcher
-├── stop_platform.sh              # Multi-terminal process terminator
-├── architecture/                 # Architecture diagrams (SVG & Excalidraw)
-│   ├── main.svg
-│   ├── worker_distributed_processing.svg
-│   └── idempotency_mechaism.svg
-├── backend/                      # Python FastAPI backend & worker pipeline
-│   ├── app/                      # REST API & DB models
-│   ├── planner/                  # Job chunking service
-│   ├── worker/                   # FFmpeg transcoder service
-│   ├── finalizer/                # Rendition playlist assembler
-│   ├── video_finalizer/          # Master playlist assembler
-│   ├── outbox/                   # Outbox event dispatcher
-│   ├── reconciler/               # Pipeline recovery service
-│   ├── Dockerfile                # Container definition with FFmpeg
-│   └── infrastructure/kafka/     # Docker Compose for Kafka KRaft & Redis
-└── frontend/                     # Next.js 16 web application
-    ├── app/                      # App router pages & API handlers
-    ├── components/               # UI components (player, diagram, grid)
-    └── content/docs/             # Interactive documentation
-```
-
----
 
 ## License
 

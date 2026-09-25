@@ -1,4 +1,4 @@
-<img width="4076" height="2315" alt="Screenshot from 2026-09-25 22-46-19" src="https://github.com/user-attachments/assets/2de5be30-1e79-41a3-b3cd-bedbd32c7546" /># Transcode.io — Fault-Tolerant Distributed Video Transcoding Platform
+# Transcode.io — Fault-Tolerant Distributed Video Transcoding Platform
 
 An enterprise-grade, event-driven video processing pipeline that ingests high-resolution video assets, dynamically splits them into parallel chunk jobs, and transcodes multi-bitrate HLS streams (360p to 1440p) across a fault-tolerant worker cluster using FFmpeg, Apache Kafka, FastAPI, Supabase (PostgreSQL), Redis, and Next.js 16.
 
@@ -262,6 +262,8 @@ kubectl port-forward svc/kafka-ui-service 8080:8080 -n video-pipeline
 <img width="4076" height="2315" alt="Screenshot from 2026-09-25 22-46-19" src="https://github.com/user-attachments/assets/7ae3b192-b298-43a1-8fce-4cef9e4d3832" />
 
 <img width="4093" height="2307" alt="image" src="https://github.com/user-attachments/assets/0d635bfa-d684-4d6c-8dca-45336df1b221" />
+
+<img width="4076" height="2315" alt="Screenshot from 2026-09-25 22-46-19" src="https://github.com/user-attachments/assets/2de5be30-1e79-41a3-b3cd-bedbd32c7546" />
 
 ### Find the Docs -> https://transcode-sage.vercel.app/docs
 

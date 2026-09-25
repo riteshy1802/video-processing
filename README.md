@@ -247,25 +247,23 @@ kubectl port-forward svc/kafka-ui-service 8080:8080 -n video-pipeline
 
 ### A glimpse of the Product
 
-[Screencast from 2026-09-25 23-55-41.webm](https://github.com/user-attachments/assets/4756a001-e971-4ea6-a4fb-6f19ddf44291)
+[Example 1](https://github.com/user-attachments/assets/4756a001-e971-4ea6-a4fb-6f19ddf44291)
 
-[Screencast from 2026-09-25 23-45-59.webm](https://github.com/user-attachments/assets/4361fdd9-8d72-479d-94b2-385c7258d316)
+[Example 2](https://github.com/user-attachments/assets/4361fdd9-8d72-479d-94b2-385c7258d316)
 
-[Screencast from 2026-09-25 23-20-20.webm](https://github.com/user-attachments/assets/2335f1d9-fe38-4825-bb31-b64dc766b193)
+[Example 3](https://github.com/user-attachments/assets/0f9eaa30-d37f-4427-9ccb-81e4ba9e847e)
 
-[Screencast from 2026-09-25 23-15-13.webm](https://github.com/user-attachments/assets/6e9929ae-85a1-4f29-9d4c-d059412cc4bf)
-
-[Screencast from 2026-09-26 01-19-11.webm](https://github.com/user-attachments/assets/f71e4749-58c6-4b12-96cf-4152e6de9f06)
+[Example 4](https://github.com/user-attachments/assets/f71e4749-58c6-4b12-96cf-4152e6de9f06)
 
 ### Some Screenshots
+
+<img width="4076" height="2315" alt="Screenshot from 2026-09-25 22-46-19" src="https://github.com/user-attachments/assets/2de5be30-1e79-41a3-b3cd-bedbd32c7546" />
 
 <img width="4076" height="2315" alt="Screenshot from 2026-09-25 22-46-19" src="https://github.com/user-attachments/assets/7ae3b192-b298-43a1-8fce-4cef9e4d3832" />
 
 <img width="4093" height="2307" alt="image" src="https://github.com/user-attachments/assets/0d635bfa-d684-4d6c-8dca-45336df1b221" />
 
-<img width="4076" height="2315" alt="Screenshot from 2026-09-25 22-46-19" src="https://github.com/user-attachments/assets/2de5be30-1e79-41a3-b3cd-bedbd32c7546" />
-
-### Find the Docs -> https://transcode-sage.vercel.app/docs
+### Find the Docs -> [Here](https://transcode-sage.vercel.app/docs)
 
 ## Makefile Command Reference
 

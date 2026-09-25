@@ -1,0 +1,53 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: video-processing
+  region: ap-southeast-2
+  version: "1.34"
+
+vpc:
+  nat:
+    gateway: Disable
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: true
+
+managedNodeGroups:
+  - name: system
+    instanceType: m7i.xlarge
+
+    minSize: 1
+    desiredCapacity: 1
+    maxSize: 1
+
+    privateNetworking: false
+
+    volumeSize: 50
+    volumeType: gp3
+
+    labels:
+      workload: system
+
+    tags:
+      Project: video-processing
+      Environment: demo
+      NodeGroup: system
+  
+  - name: compute
+    instanceType: c7i.2xlarge
+
+    minSize: 0
+    desiredCapacity: 1
+    maxSize: 3
+
+    volumeSize: 30
+    volumeType: gp3
+
+    labels:
+      workload: transcode
+
+    tags:
+      Project: video-processing
+      Environment: demo
+      NodeGroup: compute

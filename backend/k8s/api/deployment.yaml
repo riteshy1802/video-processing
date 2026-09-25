@@ -18,8 +18,8 @@ spec:
     spec:
       containers:
         - name: api
-          image: video-processing-backend:local
-          imagePullPolicy: Never
+          image: 815470164705.dkr.ecr.ap-southeast-2.amazonaws.com/video-processing-backend:v1
+          imagePullPolicy: IfNotPresent
 
           command:
             - uvicorn

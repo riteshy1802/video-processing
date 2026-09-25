@@ -15,6 +15,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+# Dont ignore the lib dir in the aws folder
+!scripts/aws/lib
 lib64/
 parts/
 sdist/
